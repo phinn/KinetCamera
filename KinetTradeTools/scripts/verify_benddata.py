@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""verify_benddata.py — benddata.json 完整性门禁(对齐 KinetDriverStudy verify_bank 模式)。
-
-检查项:
-  1. JSON 可解析,version/source 字段存在
-  2. conduit id 唯一
-  3. id 命名 = type 小写-tradeSize
-  4. 数值字段全为正
-  5. EMT/RMC/IMC 三类各有 10 档管径且管径集合一致
-  6. shrinkPerInch 与 Benfield 常数表逐档比对(黄金值)
-  7. 1/2"–4" 全 30 项
+"""
+benddata.json 完整性门禁:
+  1. version / source 字段存在
+  2. id 唯一,命名规则 = type小写-管径(去引号)
+  3. take-up / minRadius 数值为正
+  4. EMT/RMC/IMC 三型 × 1/2"–4" 全 30 项
+  5. 不允许残留 shrinkPerInsh/shrink 字段(shrink 是角度函数,已收编进 BendAngle.shrinkPerInch(angle:),数据里出现即为双重真值)
 退出码非 0 = 门禁失败。
 """
 import json
@@ -16,20 +13,6 @@ import sys
 from pathlib import Path
 
 DATA = Path(__file__).resolve().parent.parent / "KitCore" / "Sources" / "KitCore" / "benddata.json"
-
-# Benfield shrink 系数黄金表(每英寸 offset 的缩短量,英寸)
-BENFIELD_SHRINK = {
-    '1/2"': 5 / 16,      # 0.3125
-    '3/4"': 3 / 8,       # 0.375
-    '1"': 7 / 16,        # 0.4375
-    '1-1/4"': 9 / 16,    # 0.5625
-    '1-1/2"': 5 / 8,     # 0.625
-    '2"': 11 / 16,       # 0.6875
-    '2-1/2"': 13 / 16,   # 0.8125
-    '3"': 15 / 16,       # 0.9375
-    '3-1/2"': 17 / 16,   # 1.0625
-    '4"': 19 / 16,       # 1.1875
-}
 
 EXPECTED_SIZES = [
     '1/2"', '3/4"', '1"', '1-1/4"', '1-1/2"',
@@ -60,15 +43,13 @@ def main() -> int:
         if cid != expect_id:
             errors.append(f"{cid}: id 应为 {expect_id}")
         # 数值正数
-        for field in ("takeUpInches", "shrinkPerInch", "minRadiusInches"):
+        for field in ("takeUpInches", "minRadiusInches"):
             if not c.get(field) or c[field] <= 0:
                 errors.append(f"{cid}: {field} 非正数")
-        # Benfield shrink 黄金值
-        want = BENFIELD_SHRINK.get(c["tradeSize"])
-        if want is None:
-            errors.append(f"{cid}: 管径 {c['tradeSize']} 不在黄金表内")
-        elif abs(c["shrinkPerInch"] - want) > 1e-9:
-            errors.append(f"{cid}: shrinkPerInch={c['shrinkPerInch']} 应为 {want}")
+        # shrink 不得出现在数据里(角度函数,见 BendAngle.shrinkPerInch)
+        for banned in ("shrinkPerInch", "shrink"):
+            if banned in c:
+                errors.append(f"{cid}: 禁止字段 {banned}(shrink 已按角度建模,勿在数据里双写)")
 
     # 三类各 10 档、管径集合一致
     by_type: dict[str, list] = {}
@@ -94,7 +75,7 @@ def main() -> int:
             print(f"  - {e}")
         return 1
 
-    print(f"✓ verify_benddata PASS:{total} 项管规,3 型 × 10 档,shrink 黄金值全对")
+    print(f"✓ verify_benddata PASS:{total} 项管规,3 型 × 10 档,字段完备无残留")
     return 0
 
 

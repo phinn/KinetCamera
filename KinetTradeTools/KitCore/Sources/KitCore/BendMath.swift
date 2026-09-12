@@ -7,8 +7,6 @@ public struct ConduitSpec: Codable, Identifiable, Equatable {
     public let type: String               // "EMT" / "RMC" / "IMC" / "PVC"
     /// take-up( Bender deduct):弯 90° 时弯管机吃掉的长度
     public let takeUpInches: Double
-    /// shrink 系数:每英寸 offset 高度产生的缩短量(Benfield 表)
-    public let shrinkPerInch: Double
     /// NEC Table 2 最小弯内半径( inches)
     public let minRadiusInches: Double
 
@@ -40,6 +38,19 @@ public enum BendAngle: Double, CaseIterable, Identifiable {
     public static func multiplier(degrees: Double) -> Double {
         guard degrees > 0.5 else { return .infinity }
         return 1.0 / sin(degrees * .pi / 180.0)
+    }
+
+    /// Benfield shrink 表(每英寸 offset 高度的缩短量)。
+    /// shrink 物理本质 = h·tan(θ/2);标称角沿用行业背诵表值,其余角度用精确式。
+    public static func shrinkPerInch(angleDegrees: Double) -> Double {
+        switch angleDegrees {
+        case 10: return 0.0625    // 1/16
+        case 22.5: return 0.1875  // 3/16
+        case 30: return 0.25      // 1/4
+        case 45: return 0.375     // 3/8
+        case 60: return 0.5       // 1/2
+        default: return tan(angleDegrees * .pi / 360.0)
+        }
     }
 }
 
@@ -85,7 +96,7 @@ public enum BendMath {
     public static func offset(height: Double, angleDegrees: Double, spec: ConduitSpec) -> OffsetResult {
         let m = BendAngle.multiplier(degrees: angleDegrees)
         let spacing = height * m
-        let shrink = height * spec.shrinkPerInch
+        let shrink = height * BendAngle.shrinkPerInch(angleDegrees: angleDegrees)
         return OffsetResult(
             angle: angleDegrees,
             multiplier: m,

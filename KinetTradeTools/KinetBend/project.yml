@@ -24,19 +24,41 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: false
         INFOPLIST_FILE: KinetBend/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: M92UKS6NA2
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: 5.9
         ENABLE_PREVIEWS: true
+        TARGETED_DEVICE_FAMILY: 1
         SUPPORTS_MACCATALYST: false
     info:
       path: KinetBend/Info.plist
       properties: {}
+
+  KinetBendUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: KinetBendUITests
+    dependencies:
+      - target: KinetBend
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kinetai.kinetbend.uitests
+        GENERATE_INFOPLIST_FILE: true
+        DEVELOPMENT_TEAM: M92UKS6NA2
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: 5.9
 
 schemes:
   KinetBend:
     build:
       targets:
         KinetBend: all
+        KinetBendUITests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - KinetBendUITests

@@ -1,6 +1,25 @@
 import SwiftUI
 import KitCore
 
+/// 冒烟测试注入:launch args -KinetBendMode offset -KinetBendHeight 20 -KinetBendAngle 22.5
+enum LaunchArgs {
+    static let mode: String? = {
+        let i = ProcessInfo.processInfo.arguments.firstIndex(of: "-KinetBendMode")
+        guard let i, ProcessInfo.processInfo.arguments.count > i + 1 else { return nil }
+        return ProcessInfo.processInfo.arguments[i + 1]
+    }()
+    static let height: Double? = {
+        let i = ProcessInfo.processInfo.arguments.firstIndex(of: "-KinetBendHeight")
+        guard let i, ProcessInfo.processInfo.arguments.count > i + 1 else { return nil }
+        return Double(ProcessInfo.processInfo.arguments[i + 1])
+    }()
+    static let angle: Double? = {
+        let i = ProcessInfo.processInfo.arguments.firstIndex(of: "-KinetBendAngle")
+        guard let i, ProcessInfo.processInfo.arguments.count > i + 1 else { return nil }
+        return Double(ProcessInfo.processInfo.arguments[i + 1])
+    }()
+}
+
 /// 主题:工地暗色 + 高对比,戴手套/强光可读
 enum BendTheme {
     static let bg = Color(red: 0.07, green: 0.075, blue: 0.09)
@@ -61,7 +80,10 @@ final class BendSession: ObservableObject {
 }
 
 struct RootView: View {
-    @State private var mode: BendMode = .stubUp
+    @State private var mode: BendMode = {
+        if let m = LaunchArgs.mode, let parsed = BendMode(rawValue: m) { return parsed }
+        return .stubUp
+    }()
     @StateObject private var session = BendSession()
 
     var body: some View {
@@ -244,8 +266,8 @@ struct StubUpView: View {
 
 struct OffsetView: View {
     @ObservedObject var session: BendSession
-    @State private var height: Double = 6
-    @State private var angle: Double = 30
+    @State private var height: Double = LaunchArgs.height ?? 6
+    @State private var angle: Double = LaunchArgs.angle ?? 30
 
     var result: BendMath.OffsetResult {
         BendMath.offset(height: height, angleDegrees: angle, spec: session.currentSpec)
@@ -305,7 +327,7 @@ struct OffsetView: View {
 struct Saddle3View: View {
     @ObservedObject private var session = BendSession()
     @State private var width: Double = 4
-    @State private var height: Double = 2
+    @State private var height: Double = LaunchArgs.height ?? 2
 
     var result: BendMath.SaddleResult {
         BendMath.saddle(obstacleWidth: width, obstacleHeight: height)
@@ -336,7 +358,7 @@ struct Saddle3View: View {
 struct Saddle4View: View {
     @ObservedObject private var session = BendSession()
     @State private var width: Double = 6
-    @State private var height: Double = 3
+    @State private var height: Double = LaunchArgs.height ?? 3
 
     var result: BendMath.FourPointSaddleResult {
         BendMath.fourPointSaddle(obstacleWidth: width, obstacleHeight: height)
@@ -366,8 +388,8 @@ struct Saddle4View: View {
 
 struct KickView: View {
     @ObservedObject private var session = BendSession()
-    @State private var height: Double = 4
-    @State private var angle: Double = 45
+    @State private var height: Double = LaunchArgs.height ?? 4
+    @State private var angle: Double = LaunchArgs.angle ?? 45
 
     var result: BendMath.KickResult {
         BendMath.kick(height: height, angleDegrees: angle)

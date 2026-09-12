@@ -1,0 +1,30 @@
+/* Modes */
+"mode.stubup" = "90° 直弯(Stub-Up)";
+"mode.offset" = "Z 字弯";
+"mode.saddle3" = "三点马鞍弯";
+"mode.saddle4" = "四点马鞍弯";
+"mode.kick" = "踢弯";
+
+/* Fields */
+"field.height" = "抬高高度(英寸)";
+"field.offsetheight" = "Z 弯高度(英寸)";
+"field.angle" = "弯曲角度";
+"field.obstaclewidth" = "障碍物宽度(英寸)";
+"field.obstacleheight" = "障碍物高度(英寸)";
+"field.kickheight" = "踢弯高度(英寸)";
+
+/* Results */
+"result.takeup" = "扣除量(Take-up)";
+"result.mark1" = "第一标记(对弯管器箭头)";
+"result.mark2" = "第二标记(终点)";
+"result.multiplier" = "系数";
+"result.markspacing" = "两标记间距";
+"result.shrink" = "收缩量";
+"result.centermark" = "中心标记(对障碍中心)";
+"result.sidemark" = "侧标记(距中心)";
+"result.angles" = "弯曲顺序";
+"result.risespacing" = "中心两标记(=障碍宽)";
+"result.markdistance" = "距墙角标记距离";
+
+/* Hints */
+"hint.stubup" = "从管端量出第一标记,对准弯管器箭头;从第一标记量出扣除量即终点,弯 90°。";

@@ -1,0 +1,38 @@
+{
+  "version": "1.0.0",
+  "source": "NEC 2023 Chapter 9 Table 2 (minimum bend radius) + Benfield conduit bending constants; take-up values per common bender shoes (Ideal/Greenlee published deducts)",
+  "conduits": [
+    { "id": "emt-1/2",   "tradeSize": "1/2\"",  "type": "EMT", "takeUpInches": 5.0,    "shrinkPerInch": 0.3125, "minRadiusInches": 4.0 },
+    { "id": "emt-3/4",   "tradeSize": "3/4\"",  "type": "EMT", "takeUpInches": 6.0,    "shrinkPerInch": 0.375,  "minRadiusInches": 4.5 },
+    { "id": "emt-1",     "tradeSize": "1\"",    "type": "EMT", "takeUpInches": 8.0,    "shrinkPerInch": 0.4375, "minRadiusInches": 5.75 },
+    { "id": "emt-1-1/4", "tradeSize": "1-1/4\"", "type": "EMT", "takeUpInches": 9.0,   "shrinkPerInch": 0.5625, "minRadiusInches": 7.25 },
+    { "id": "emt-1-1/2", "tradeSize": "1-1/2\"", "type": "EMT", "takeUpInches": 10.0,  "shrinkPerInch": 0.625,  "minRadiusInches": 8.25 },
+    { "id": "emt-2",     "tradeSize": "2\"",    "type": "EMT", "takeUpInches": 12.0,   "shrinkPerInch": 0.6875, "minRadiusInches": 9.5 },
+    { "id": "emt-2-1/2", "tradeSize": "2-1/2\"", "type": "EMT", "takeUpInches": 16.0,  "shrinkPerInch": 0.8125, "minRadiusInches": 10.75 },
+    { "id": "emt-3",     "tradeSize": "3\"",    "type": "EMT", "takeUpInches": 19.0,   "shrinkPerInch": 0.9375, "minRadiusInches": 13.0 },
+    { "id": "emt-3-1/2", "tradeSize": "3-1/2\"", "type": "EMT", "takeUpInches": 22.0,  "shrinkPerInch": 1.0625, "minRadiusInches": 14.25 },
+    { "id": "emt-4",     "tradeSize": "4\"",    "type": "EMT", "takeUpInches": 25.0,   "shrinkPerInch": 1.1875, "minRadiusInches": 15.5 },
+
+    { "id": "rmc-1/2",   "tradeSize": "1/2\"",  "type": "RMC", "takeUpInches": 5.0,    "shrinkPerInch": 0.3125, "minRadiusInches": 4.0 },
+    { "id": "rmc-3/4",   "tradeSize": "3/4\"",  "type": "RMC", "takeUpInches": 6.0,    "shrinkPerInch": 0.375,  "minRadiusInches": 4.5 },
+    { "id": "rmc-1",     "tradeSize": "1\"",    "type": "RMC", "takeUpInches": 8.0,    "shrinkPerInch": 0.4375, "minRadiusInches": 5.75 },
+    { "id": "rmc-1-1/4", "tradeSize": "1-1/4\"", "type": "RMC", "takeUpInches": 9.0,   "shrinkPerInch": 0.5625, "minRadiusInches": 7.25 },
+    { "id": "rmc-1-1/2", "tradeSize": "1-1/2\"", "type": "RMC", "takeUpInches": 10.0,  "shrinkPerInch": 0.625,  "minRadiusInches": 8.25 },
+    { "id": "rmc-2",     "tradeSize": "2\"",    "type": "RMC", "takeUpInches": 12.0,   "shrinkPerInch": 0.6875, "minRadiusInches": 9.5 },
+    { "id": "rmc-2-1/2", "tradeSize": "2-1/2\"", "type": "RMC", "takeUpInches": 16.0,  "shrinkPerInch": 0.8125, "minRadiusInches": 10.75 },
+    { "id": "rmc-3",     "tradeSize": "3\"",    "type": "RMC", "takeUpInches": 19.0,   "shrinkPerInch": 0.9375, "minRadiusInches": 13.0 },
+    { "id": "rmc-3-1/2", "tradeSize": "3-1/2\"", "type": "RMC", "takeUpInches": 22.0,  "shrinkPerInch": 1.0625, "minRadiusInches": 14.25 },
+    { "id": "rmc-4",     "tradeSize": "4\"",    "type": "RMC", "takeUpInches": 25.0,   "shrinkPerInch": 1.1875, "minRadiusInches": 15.5 },
+
+    { "id": "imc-1/2",   "tradeSize": "1/2\"",  "type": "IMC", "takeUpInches": 5.0,    "shrinkPerInch": 0.3125, "minRadiusInches": 4.0 },
+    { "id": "imc-3/4",   "tradeSize": "3/4\"",  "type": "IMC", "takeUpInches": 6.0,    "shrinkPerInch": 0.375,  "minRadiusInches": 4.5 },
+    { "id": "imc-1",     "tradeSize": "1\"",    "type": "IMC", "takeUpInches": 8.0,    "shrinkPerInch": 0.4375, "minRadiusInches": 5.75 },
+    { "id": "imc-1-1/4", "tradeSize": "1-1/4\"", "type": "IMC", "takeUpInches": 9.0,   "shrinkPerInch": 0.5625, "minRadiusInches": 7.25 },
+    { "id": "imc-1-1/2", "tradeSize": "1-1/2\"", "type": "IMC", "takeUpInches": 10.0,  "shrinkPerInch": 0.625,  "minRadiusInches": 8.25 },
+    { "id": "imc-2",     "tradeSize": "2\"",    "type": "IMC", "takeUpInches": 12.0,   "shrinkPerInch": 0.6875, "minRadiusInches": 9.5 },
+    { "id": "imc-2-1/2", "tradeSize": "2-1/2\"", "type": "IMC", "takeUpInches": 16.0,  "shrinkPerInch": 0.8125, "minRadiusInches": 10.75 },
+    { "id": "imc-3",     "tradeSize": "3\"",    "type": "IMC", "takeUpInches": 19.0,   "shrinkPerInch": 0.9375, "minRadiusInches": 13.0 },
+    { "id": "imc-3-1/2", "tradeSize": "3-1/2\"", "type": "IMC", "takeUpInches": 22.0,  "shrinkPerInch": 1.0625, "minRadiusInches": 14.25 },
+    { "id": "imc-4",     "tradeSize": "4\"",    "type": "IMC", "takeUpInches": 25.0,   "shrinkPerInch": 1.1875, "minRadiusInches": 15.5 }
+  ]
+}

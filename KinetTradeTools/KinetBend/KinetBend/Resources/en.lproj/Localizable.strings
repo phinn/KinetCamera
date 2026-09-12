@@ -1,0 +1,30 @@
+/* Modes */
+"mode.stubup" = "90° Stub-Up";
+"mode.offset" = "Offset";
+"mode.saddle3" = "3-Point Saddle";
+"mode.saddle4" = "4-Point Saddle";
+"mode.kick" = "Kick";
+
+/* Fields */
+"field.height" = "Height (in)";
+"field.offsetheight" = "Offset height (in)";
+"field.angle" = "Bend angle";
+"field.obstaclewidth" = "Obstacle width (in)";
+"field.obstacleheight" = "Obstacle height (in)";
+"field.kickheight" = "Kick height (in)";
+
+/* Results */
+"result.takeup" = "Take-up (deduct)";
+"result.mark1" = "Mark 1 (to arrow)";
+"result.mark2" = "Mark 2 (end)";
+"result.multiplier" = "Multiplier";
+"result.markspacing" = "Mark spacing";
+"result.shrink" = "Shrink";
+"result.centermark" = "Center mark (to obstacle center)";
+"result.sidemark" = "Side marks (from center)";
+"result.angles" = "Bend sequence";
+"result.risespacing" = "Center marks (obstacle width)";
+"result.markdistance" = "Mark distance from corner";
+
+/* Hints */
+"hint.stubup" = "Measure mark 1 from the end of conduit, align with the bender arrow, then bend 90° at mark 2.";

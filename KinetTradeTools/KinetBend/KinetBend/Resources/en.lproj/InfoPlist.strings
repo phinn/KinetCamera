@@ -1,0 +1,3 @@
+// 帮助 CFBundleDisplayName 等随语言切换(可选,先给四语 App 名称)
+// en
+"CFBundleDisplayName" = "KinetBend";

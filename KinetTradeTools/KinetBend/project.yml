@@ -33,7 +33,8 @@ targets:
         SUPPORTS_MACCATALYST: false
     info:
       path: KinetBend/Info.plist
-      properties: {}
+      properties:
+        ITSAppUsesNonExemptEncryption: false
 
   KinetBendUITests:
     type: bundle.ui-testing

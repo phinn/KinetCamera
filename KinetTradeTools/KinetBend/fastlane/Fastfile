@@ -1,7 +1,7 @@
 default_platform(:ios)
 
 platform :ios do
-  desc "Push metadata + screenshots + binary to App Store Connect"
+  desc "Push metadata + screenshots + binary, then SUBMIT FOR REVIEW"
   lane :release do
     deliver(
       api_key_path: "/tmp/asc_key.json",
@@ -9,18 +9,31 @@ platform :ios do
       skip_binary_upload: false,
       skip_metadata: false,
       skip_screenshots: false,
-      force: true,               # 跳过 HTML 报告人工确认,全自动
+      force: true,                    # 跳过 HTML 报告人工确认,全自动
+      submit_for_review: true,        # 直接过审提交,目标是上架
+      automatic_release: false,       # 手动放行(Apple 批过后人工点发布,或改 true)
+      app_rating_config_path: "fastlane/age_rating.json",
       run_precheck_before_submit: true,
-      submit_for_review: false   # 元数据/截图/构建就位后,提交审核由 ASC 后台一键(或改 true)
+      precheck_default_rule_level: "warn",
+      submission_information: {
+        export_compliance_uses_encryption: false,   # 纯离线,无非豁免加密(HTTPS 都不用)
+        content_rights_contains_third_party_content: false,
+        add_id_info_uses_idfa: false
+      }
     )
   end
 
-  desc "Only metadata + screenshots (no binary)"
+  desc "Only metadata + screenshots (no binary, no submit)"
   lane :meta do
     deliver(
       api_key_path: "/tmp/asc_key.json",
       skip_binary_upload: true,
       force: true,
+      app_rating_config_path: "fastlane/age_rating.json",
+      submission_information: {
+        content_rights_contains_third_party_content: false,
+        add_id_info_uses_idfa: false
+      },
       submit_for_review: false
     )
   end

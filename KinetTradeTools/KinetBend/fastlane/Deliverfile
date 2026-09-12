@@ -4,6 +4,11 @@ team_id "M92UKS6NA2"
 app_review_information(
   first_name: "JUNJIE",
   last_name: "SHEN",
-  email_address: "phinn@outlook.com"
+  email_address: "phinn@outlook.com",
+  phone_number: "+86 138 0000 0000"
 )
-submission_information({ add_id_info_uses_idfa: false })
+submission_information({
+  export_compliance_uses_encryption: false,
+  content_rights_contains_third_party_content: false,
+  add_id_info_uses_idfa: false
+})

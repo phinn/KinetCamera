@@ -1,0 +1,15 @@
+KinetBend is a fully offline conduit bending calculator for electricians.
+
+FOR THE REVIEWER
+• No account system, no sign-up, no login — the app is usable immediately after launch.
+• Works 100% offline: the app makes no network connections at all.
+• No IDFA / no advertising / no tracking / no analytics.
+• No user-generated content, no chat, no external links.
+• All bend data (30 conduit specs, Benfield multipliers) is bundled inside the app.
+• The math is deterministic: same inputs always produce the same marks.
+
+HOW TO TEST IN 30 SECONDS
+1. Launch — the Stub-Up screen appears.
+2. Pick a conduit size (default 1/2" EMT), enter a height, tap Calculate.
+3. The mark distances and a diagram appear. Switch modes via the 5 tabs at the bottom.
+4. Everything also works with the device in Airplane Mode.

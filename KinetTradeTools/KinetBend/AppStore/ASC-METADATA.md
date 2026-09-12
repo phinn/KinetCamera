@@ -157,8 +157,8 @@ KinetBendは、電気工事士が現場に置いておける配管曲げ計算�
 - [x] codesign --verify --strict 通过
 - [x] TARGETED_DEVICE_FAMILY=1(iPhone only,免 iPad 截图)
 - [x] 无占位文案(全部五页有真实数据;StoreKit 不涉及,无 IAP 死文案问题)
-- [x] Privacy Policy URL(发布时挂 https://kinet.ai/apps/kinetbend/privacy,或复用已有站点路径——上线前确认可访问)
-- [x] Support URL 同上
+- [x] Privacy Policy URL: https://phinn.github.io/KinetAppPortal/kinetbend-privacy.html (已上线 200,四语切换)
+- [x] Support URL: https://phinn.github.io/KinetAppPortal/kinetbend-support.html (已上线 200,含 FAQ + 联系邮箱)
 - [ ] ASC 后台:App Privacy 全 No;Export compliance 选 standard encryption 豁免
 - [ ] 提审备注(Review Notes):en 写一句 "A conduit bending calculator. No account needed. All features available offline."(工具类零数据,基本秒审)
 

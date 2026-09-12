@@ -1,0 +1,20 @@
+KinetBend is the conduit bending calculator electricians keep on the job site. Five essential bends, exact mark distances, and a dark high-contrast UI you can read under a work light.
+
+ALL FIVE BENDS
+• 90° Stub-Up — take-up deduction, mark-to-arrow and end marks
+• Offset — Benfield multipliers for 10/22.5/30/45/60° plus ANY angle with exact 1/sinθ math
+• 3-Point Saddle — center mark + side marks, 22.5/45/22.5 sequence
+• 4-Point Saddle — rise spacing = obstacle width, side marks auto-computed
+• Kick — kick height and angle to mark distance
+
+BUILT FOR REAL WORK
+• 30 conduit specs: EMT, RMC, IMC from 1/2" to 4" (NEC Table 2 minimum radii built in)
+• Shrink values follow the Benfield tables
+• Every distance shown as 1/16" fractions, decimal inches, or millimeters
+• Diagram on every result: the mark locations drawn right on the conduit run
+• 100% offline. No account, no network, no data collection.
+
+DARK JOBSITE THEME
+High-contrast surfaces, large touch targets — designed to work with gloves on and sun on the screen.
+
+Whether you're running EMT in a commercial ceiling or rigid steel into a panel, KinetBend gets the marks right the first time.

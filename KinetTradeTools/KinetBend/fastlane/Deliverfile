@@ -1,0 +1,9 @@
+app_identifier "com.kinetai.kinetbend"
+username "phinn@outlook.com"
+team_id "M92UKS6NA2"
+app_review_information(
+  first_name: "JUNJIE",
+  last_name: "SHEN",
+  email_address: "phinn@outlook.com"
+)
+submission_information({ add_id_info_uses_idfa: false })

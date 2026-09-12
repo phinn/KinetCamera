@@ -1,0 +1,27 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push metadata + screenshots + binary to App Store Connect"
+  lane :release do
+    deliver(
+      api_key_path: "/tmp/asc_key.json",
+      ipa: "/tmp/KinetBend-export/KinetBend.ipa",
+      skip_binary_upload: false,
+      skip_metadata: false,
+      skip_screenshots: false,
+      force: true,               # 跳过 HTML 报告人工确认,全自动
+      run_precheck_before_submit: true,
+      submit_for_review: false   # 元数据/截图/构建就位后,提交审核由 ASC 后台一键(或改 true)
+    )
+  end
+
+  desc "Only metadata + screenshots (no binary)"
+  lane :meta do
+    deliver(
+      api_key_path: "/tmp/asc_key.json",
+      skip_binary_upload: true,
+      force: true,
+      submit_for_review: false
+    )
+  end
+end

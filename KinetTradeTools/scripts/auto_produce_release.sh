@@ -18,8 +18,12 @@ while [[ $(date +%s) -lt $deadline ]]; do
   elif echo "$out" | grep -q "AccessForbidden"; then
     log "仍无 CREATE 权限,继续等…"
     sleep "$POLL"
+  elif echo "$out" | grep -q "NAME_TAKEN"; then
+    log "✗ 应用名被占用(永久错误):$(echo "$out" | tail -1)"
+    log "  → 需人工在 ASC 换名或用现有 record;自动链路终止"
+    exit 4
   else
-    log "未知输出:$(echo "$out" | tail -1),视为暂时网络问题,继续"
+    log "暂时性错误:$(echo "$out" | tail -1),30s 后重试"
     sleep 30
   fi
 done

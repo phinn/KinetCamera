@@ -1,4 +1,4 @@
-# 探测+建档:EXISTS 直接退出;有权限则建档;403 输出 AccessForbidden 给外层识别
+# 探测+建档:EXISTS 直接退出;有权限则建档;403=AccessForbidden;名字冲突=NAME_TAKEN;其它=APIError
 require 'spaceship'
 filepath = File.expand_path('~/.appstoreconnect/private_keys/AuthKey_WGY2HCFK9K.p8')
 client = Spaceship::ConnectAPI::Client.auth(key_id: 'WGY2HCFK9K', issuer_id: 'd4da77ce-6781-4aef-acdd-c7480df892d5', filepath: filepath)
@@ -21,4 +21,13 @@ begin
 rescue Spaceship::AccessForbiddenError
   puts "AccessForbidden: key lacks CREATE"
   exit 1
+rescue Spaceship::Client::APIError => e
+  msg = e.message.lines[0].to_s.strip
+  status = e.http_status rescue nil
+  if [409, 422].include?(status) || msg =~ /name.*(already|in use|not available)|INVALID_APP_NAME/i
+    puts "NAME_TAKEN: #{status} #{msg}"
+    exit 4
+  end
+  puts "APIError: #{status} #{msg}"
+  exit 5
 end

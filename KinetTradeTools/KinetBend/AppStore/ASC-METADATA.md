@@ -24,7 +24,7 @@
 ## 二、各语言元数据(30 字符/子标题,100 字符内关键词,4000 字描述)
 
 ### en-US
-- **Name**(30): `KinetBend — Conduit Bender`
+- **Name**(30): `KinetBend: Bender Calculator`
 - **Subtitle**(30): `5 bends, pro marks, 1/16"`
 - **Keywords**(100): `conduit,bender,electrician,bend,offset,saddle,stub up,kick,90,emt,rmc,imc,trade,math,calculator`
 - **Promo text**(170): `All five essential conduit bends with exact mark distances — 1/16" fractions, mm switch, works offline on the job site.`

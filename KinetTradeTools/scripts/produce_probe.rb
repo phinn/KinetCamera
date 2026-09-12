@@ -10,7 +10,7 @@ if app
 end
 begin
   app = Spaceship::ConnectAPI::App.create(
-    name: 'KinetBend — Conduit Bender',
+    name: 'KinetBend: Bender Calculator',
     version_string: '1.0.0',
     sku: 'KINETBEND001',
     primary_locale: 'en-US',

@@ -205,9 +205,27 @@ final class CameraManager: NSObject, ObservableObject {
         debugFormatDims = "\(dims.width)x\(dims.height)"
         unlockMaxResolutionLocked(mainDevice)
 
-        if let mic = AVCaptureDevice.default(for: .audio),
-           AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-           let micInput = try? AVCaptureDeviceInput(device: mic) {
+        if let mic = AVCaptureDevice.default(for: .audio) {
+            let status = AVCaptureDevice.authorizationStatus(for: .audio)
+            if status == .authorized {
+                addMicLocked(mic)
+            } else if status == .notDetermined {
+                // 首次:请求麦克风权限,授权后自动重建会话补上音轨
+                AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                    guard granted else { return }
+                    self?.sessionQueue.async { [weak self] in
+                        guard let self else { return }
+                        self.rebuildSessionLocked()  // 会话已 running,配置块提交即生效
+                    }
+                }
+            }
+        }
+    }
+
+    /// 已授权状态下把麦克风挂进会话(须在 sessionQueue 上调用)
+    private func addMicLocked(_ mic: AVCaptureDevice) {
+        if session.inputs.contains(where: { ($0 as? AVCaptureDeviceInput)?.device == mic }) { return }
+        if let micInput = try? AVCaptureDeviceInput(device: mic) {
             if session.canAddInput(micInput) { session.addInput(micInput) }
             audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
             if session.canAddOutput(audioDataOutput) { session.addOutput(audioDataOutput) }

@@ -40,6 +40,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var audioInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var sessionStartAligned = false
+    private var sessionStartPTS = CMTime.zero       // 视频首帧 PTS(会话时间轴原点)
+    private var audioPTSShift: CMTime?              // 麦克风时钟 → 会话时间轴 的平移量
     private var recordStartRealtime: Date?
     private var recordTimer: Timer?
     private var movieURL: URL?
@@ -61,6 +63,7 @@ final class CameraManager: NSObject, ObservableObject {
     private(set) var framesDropped = 0
     private(set) var videoFrames = 0
     private(set) var audioFrames = 0
+    private(set) var activeMicName = ""
 
     override init() {
         super.init()
@@ -205,7 +208,8 @@ final class CameraManager: NSObject, ObservableObject {
         debugFormatDims = "\(dims.width)x\(dims.height)"
         unlockMaxResolutionLocked(mainDevice)
 
-        if let mic = AVCaptureDevice.default(for: .audio) {
+        if let mic = pickRealMicrophone() {
+            activeMicName = mic.localizedName
             let status = AVCaptureDevice.authorizationStatus(for: .audio)
             if status == .authorized {
                 addMicLocked(mic)
@@ -230,6 +234,20 @@ final class CameraManager: NSObject, ObservableObject {
             audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
             if session.canAddOutput(audioDataOutput) { session.addOutput(audioDataOutput) }
         }
+    }
+
+    /// 挑真实麦克风:AVCaptureDevice.default(for:.audio) 会拿到第一个设备,
+    /// 本机被 OrayVirtualAudioDevice(远程控制虚拟声卡)占位 → 音轨永远 -91dB 静音。
+    /// 规则:名字含虚拟设备特征词的靠后;便携机内置麦克风优先。
+    private func pickRealMicrophone() -> AVCaptureDevice? {
+        let all = AVCaptureDevice.devices(for: .audio)
+        let builtin = all.first {
+            let n = $0.localizedName
+            return !n.contains("Virtual") && !n.contains("Teams") && !n.contains("Oray")
+                && (n.contains("麦克风") || n.contains("Microphone") || n.contains("MacBook"))
+        }
+        NSLog("[KinetCamera] mics: %@ → picked %@", all.map(\.localizedName).joined(separator: " | "), builtin?.localizedName ?? "default")
+        return builtin ?? AVCaptureDevice.default(for: .audio)
     }
 
     // MARK: - 帧环(夜拍多帧合成 / burst 连拍共用)
@@ -329,14 +347,16 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         framesDelivered &+= 1
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
+        // ⚠️ 音频判定必须在取 imageBuffer 之前:音频 sample buffer 没有 pixelBuffer,
+        //    旧代码 guard 先行把音频帧全部静默吞掉(audioFrames 恒 0,成片无声)
         if output === audioDataOutput {
             audioFrames &+= 1
             writeAudioSample(sampleBuffer)
             return
         }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
         videoFrames &+= 1
         if SyntheticCameraSource.shared.isActive {
             NSLog("[KinetCamera] hardware frames resumed — stopping synthetic source")
@@ -460,6 +480,7 @@ extension CameraManager {
             self.pixelBufferAdaptor = adaptor
             self.movieURL = url
             self.sessionStartAligned = false
+            self.audioPTSShift = nil
             self.recordStartRealtime = Date()
             writer.startWriting()
 
@@ -496,6 +517,7 @@ extension CameraManager {
                     self.audioInput = nil
                     self.pixelBufferAdaptor = nil
                     self.sessionStartAligned = false
+                    self.audioPTSShift = nil
                     completion?(writer.status == .completed ? url : nil)
                 }
             }
@@ -522,6 +544,8 @@ extension CameraManager {
         if !sessionStartAligned {
             writer.startSession(atSourceTime: time)   // 只调一次,对齐第一帧 PTS
             sessionStartAligned = true
+            sessionStartPTS = time
+            audioPTSShift = nil
         }
 
         var outBuffer: CVPixelBuffer? = src
@@ -547,7 +571,32 @@ extension CameraManager {
               let input = audioInput,
               input.isReadyForMoreMediaData,
               assetWriter?.status == .writing else { return }
-        input.append(sampleBuffer)
+
+        // 麦克风 PTS 走宿主机时钟(开机秒数),视频(合成源)PTS 从 0 起。
+        // 不平移的话 startSession 对齐视频首帧后,音轨被拉成几十万秒。
+        // 以首条音频为锚,平移到当前视频时间轴。
+        var buf = sampleBuffer
+        if audioPTSShift == nil {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            audioPTSShift = CMTimeSubtract(pts, sessionStartPTS)
+        }
+        if let shift = audioPTSShift {
+            var pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            pts = CMTimeSubtract(pts, shift)
+            var timing = CMSampleTimingInfo(
+                duration: CMSampleBufferGetDuration(sampleBuffer),
+                presentationTimeStamp: pts,
+                decodeTimeStamp: CMSampleBufferGetDecodeTimeStamp(sampleBuffer))
+            // Swift 导入版签名(inout sampleBufferOut),非 ObjC 返回值版
+            var out: CMSampleBuffer?
+            if CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault, sampleBuffer: sampleBuffer,
+                sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                sampleBufferOut: &out) == noErr, let shifted = out {
+                buf = shifted
+            }
+        }
+        input.append(buf)
     }
 }
 

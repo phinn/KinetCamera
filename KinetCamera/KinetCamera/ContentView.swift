@@ -22,6 +22,8 @@ struct KinetCameraApp: App {
                     .keyboardShortcut("6", modifiers: .command)
                 Button("曝光锁定") { NotificationCenter.default.post(name: .kinetToggleAELock, object: nil) }
                     .keyboardShortcut("l", modifiers: .command)
+                Button("回溯快门") { NotificationCenter.default.post(name: .kinetCaptureRetro, object: nil) }
+                    .keyboardShortcut("r", modifiers: .command)
             }
         }
     }
@@ -31,6 +33,7 @@ extension Notification.Name {
     static let kinetCapturePhoto = Notification.Name("kinetCapturePhoto")
     static let kinetToggleRecord = Notification.Name("kinetToggleRecord")
     static let kinetCaptureNight = Notification.Name("kinetCaptureNight")
+    static let kinetCaptureRetro = Notification.Name("kinetCaptureRetro")
     static let kinetCaptureBurst = Notification.Name("kinetCaptureBurst")
     static let kinetToggleAELock = Notification.Name("kinetToggleAELock")
 }
@@ -100,6 +103,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureBurst)) { _ in
             vm.captureBurst()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureRetro)) { _ in
+            vm.captureRetro()
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetToggleAELock)) { _ in
             vm.manager.toggleAELock()

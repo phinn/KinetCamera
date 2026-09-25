@@ -145,6 +145,13 @@ final class AutomationServer {
                     userInfo: ["smoothing": s, "whitening": w])
             }
             reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w)}")
+        case ("POST", "/retro"):
+            // 回溯快门:扫描快门前2s帧环,AI选综合最优帧落盘
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                vm.captureRetro()
+                self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\"}")
+            }
         case ("POST", "/pip"):
             // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
             DispatchQueue.main.async { [weak self] in

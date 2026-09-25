@@ -21,6 +21,11 @@ final class SyntheticCameraSource: NSObject {
 
     private var pool: CVPixelBufferPool?
 
+    /// 全局亮度因子(AE Lock 闭环验证用:0.1-2.0,模拟场景光变化)
+    var brightnessFactor: Double = 1.0 {
+        didSet { brightnessFactor = max(0.1, min(2.0, brightnessFactor)) }
+    }
+
     func start() {
         queue.async { [weak self] in
             guard let self, self.displayLink == nil else { return }
@@ -90,12 +95,13 @@ final class SyntheticCameraSource: NSObject {
                 var r: UInt8
                 var g: UInt8
                 var b: UInt8
+                let f = brightnessFactor
                 switch band / (width / 3) {
-                case 0: (r, g, b) = (brightness, UInt8(Double(brightness) * 0.4 * vx + 30), UInt8(Double(brightness) * 0.6))
-                case 1: (r, g, b) = (UInt8(Double(brightness) * vx), brightness, UInt8(Double(brightness) * 0.5))
+                case 0: (r, g, b) = (UInt8(min(255, Double(brightness) * f)), UInt8(min(255, Double(brightness) * 0.4 * vx * f + 30 * f)), UInt8(min(255, Double(brightness) * 0.6 * f)))
+                case 1: (r, g, b) = (UInt8(min(255, Double(brightness) * vx * f)), UInt8(min(255, Double(brightness) * f)), UInt8(min(255, Double(brightness) * 0.5 * f)))
                 default:
                     let checker = ((x / 16 + y / 16) % 2 == 0) ? brightness : brightness / 2
-                    (r, g, b) = (checker, checker, UInt8(Double(checker) * (0.5 + 0.5 * vy)))
+                    (r, g, b) = (UInt8(min(255, Double(checker) * f)), UInt8(min(255, Double(checker) * f)), UInt8(min(255, Double(checker) * (0.5 + 0.5 * vy) * f)))
                 }
                 // 中心圆盘(构图检测目标)
                 let dx = x - width / 2

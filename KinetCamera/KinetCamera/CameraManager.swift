@@ -85,7 +85,8 @@ final class CameraManager: NSObject, ObservableObject {
             types.append(.external)
             types.append(.continuityCamera)
         } else {
-            types.append(.builtInWideAngleCamera)   // macOS 13 只有内建
+            // macOS 13:外部摄像头(OBS VirtualCam 等 DAL 插件设备)用 externalUnknown
+            types.append(.externalUnknown)
         }
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: types, mediaType: .video, position: .unspecified)
@@ -213,6 +214,69 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - 帧环(夜拍多帧合成 / burst 连拍共用)
+    private let frameRingLock = NSLock()
+    private var frameRing: [(image: CIImage, time: CMTime)] = []
+    private let frameRingCapacity = 60
+
+    private func pushRing(_ image: CIImage, time: CMTime) {
+        frameRingLock.lock()
+        frameRing.append((image, time))
+        if frameRing.count > frameRingCapacity { frameRing.removeFirst(frameRing.count - frameRingCapacity) }
+        frameRingLock.unlock()
+    }
+
+    /// 最近 N 帧(时间正序);不足返回 nil
+    func recentFrames(_ n: Int) -> [(image: CIImage, time: CMTime)]? {
+        frameRingLock.lock()
+        defer { frameRingLock.unlock() }
+        guard frameRing.count >= n else { return nil }
+        return Array(frameRing.suffix(n))
+    }
+
+    /// 当前帧环长度
+    var ringCount: Int {
+        frameRingLock.lock(); defer { frameRingLock.unlock() }
+        return frameRing.count
+    }
+
+    // MARK: - 曝光锁定(软件亮度闭环)
+    // macOS AVFoundation 无手动曝光 API(exposureModeCustom/duration/iso 全 unavailable,
+    // exposureMode .locked 实测也不支持)——AE Lock 在软件层实现:
+    // 锁定瞬间记录画面亮度 → 之后每帧 CIAreaAverage 测均值 → EV 补偿拉回目标亮度。
+    @Published var isAELocked = false
+    @Published var aeLockTarget: Double = 0
+    private var aeSmoothedEV: Double = 0
+
+    func toggleAELock() {
+        if isAELocked {
+            isAELocked = false
+            aeSmoothedEV = 0
+            NSLog("[KinetCamera] AE lock released")
+        } else {
+            guard let frame = takeLatestFrame() else { return }
+            let b = AIAnalyzer.quickMean(frame, context: FilterPipeline.shared.renderContext)
+            guard b > 0.01 else {
+                NSLog("[KinetCamera] AE lock refused: frame too dark (\(b))")
+                return
+            }
+            aeLockTarget = b
+            isAELocked = true
+            NSLog("[KinetCamera] AE locked @ brightness \(String(format: "%.3f", b)) (software loop)")
+        }
+    }
+
+    /// 帧级 AE 补偿(videoQueue 调用):返回补偿 EV,0 表示无需
+    func aeCompensationEV(for raw: CIImage) -> Double {
+        guard isAELocked, aeLockTarget > 0.01 else { return 0 }
+        let cur = AIAnalyzer.quickMean(raw, context: FilterPipeline.shared.renderContext)
+        guard cur > 0.005 else { return aeSmoothedEV }
+        let targetEV = max(-2.0, min(2.0, log2(aeLockTarget / cur)))
+        // 平滑逼近,防亮度轻微抖动引起画面呼吸
+        aeSmoothedEV += (targetEV - aeSmoothedEV) * 0.35
+        return abs(aeSmoothedEV) > 0.02 ? aeSmoothedEV : 0
+    }
+
     /// 配置帧率(不动 activeFormat:实测对内建 FaceTime 相机改格式会让 data output 静默断流)
     private func unlockMaxResolutionLocked(_ device: AVCaptureDevice) {
         do {
@@ -265,12 +329,21 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
 
     /// 视频帧统一入口(硬件源/合成源共用)
     fileprivate func ingestPixelBuffer(_ pixelBuffer: CVPixelBuffer, time: CMTime) {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-        // 缓存最近帧(拍照源)
+        // AE 锁定软件闭环:锁定后把每帧亮度拉回锁定瞬间
+        if isAELocked {
+            let ev = aeCompensationEV(for: ciImage)
+            if ev != 0 {
+                ciImage = ciImage.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
+            }
+        }
+
+        // 缓存最近帧(拍照源) + 帧环(夜拍/burst 源)
         frameLock.lock()
         lastFrameBox = (ciImage, time)
         frameLock.unlock()
+        pushRing(ciImage, time: time)
 
         if isRecording {
             writeVideoFrame(pixelBuffer, time: time)

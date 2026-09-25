@@ -53,6 +53,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let frameLock = NSLock()
 
     private var pipController: PIPController?
+    let screenSource = ScreenSourceController()
     private var streamHealthTimer: Timer?
 
     /// 诊断:rebuild 后的连接状态(供 automation status 输出)
@@ -165,6 +166,16 @@ final class CameraManager: NSObject, ObservableObject {
     /// 主摄 ↔ 画中画
     func togglePIP(_ id: String) {
         guard !isRecording else { return }
+        if id == ScreenSourceController.id {
+            // 屏幕流:伪设备,不在 devices 枚举里,单独 toggle
+            if let idx = pipDeviceIDs.firstIndex(of: id) {
+                pipDeviceIDs.remove(at: idx)
+            } else {
+                pipDeviceIDs.append(id)
+            }
+            screenSource.sync(deviceIDs: pipDeviceIDs)
+            return
+        }
         if let idx = pipDeviceIDs.firstIndex(of: id) {
             pipDeviceIDs.remove(at: idx)
         } else if id != activeDeviceID {
@@ -183,6 +194,18 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
         pipController?.setActive(ids: pipDeviceIDs, devices: devices)
+    }
+
+    /// 全信号源状态(主摄 + 屏流),给 /status 诊断
+    var pipStatusMessage: String {
+        var parts: [String] = []
+        if let c = pipController, !pipDeviceIDs.filter({ $0 != ScreenSourceController.id }).isEmpty {
+            parts.append("摄像头PIP rig×\(pipDeviceIDs.filter { $0 != ScreenSourceController.id }.count)")
+        }
+        if pipDeviceIDs.contains(ScreenSourceController.id) {
+            parts.append("屏流[\(screenSource.statusMessage)]")
+        }
+        return parts.isEmpty ? "无PIP" : parts.joined(separator: " + ")
     }
 
     private func rebuildSessionLocked() {
@@ -670,3 +693,57 @@ final class PIPController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                        didDrop sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {}
 }
+
+// MARK: - 屏幕捕捉第二路信号源(CGDisplayStream)
+// 场景:教学/演示/直播需要「人+桌面资料同框」。不依赖摄像头栈(OBS 虚拟摄被系统禁、
+// 桌上视角相机需 iPhone 活跃),屏幕是每台 Mac 永远在的第二路画面。
+// 权限:macOS 10.15+ 走屏幕录制 TCC 授权,拒绝时isActive=false并上报,不 crash。
+final class ScreenSourceController: NSObject {
+    static let id = "kinet.screen.0"   // 伪设备 ID,UI/接口用同一标识
+
+    var onFrame: ((String, CIImage) -> Void)?
+    private var stream: CGDisplayStream?
+    private(set) var isActive = false
+    private var lastError = ""
+
+    /// deviceIDs 里含 kinet.screen.0 → 开屏流,否则关
+    func sync(deviceIDs: [String]) {
+        let want = deviceIDs.contains(Self.id)
+        if want, !isActive { start() }
+        else if !want, isActive { stop() }
+    }
+
+    var statusMessage: String { isActive ? "屏流运行中" : (lastError.isEmpty ? "未启动" : lastError) }
+
+    private func start() {
+        guard stream == nil else { return }
+        let display = CGMainDisplayID()
+        guard let s = CGDisplayStream(
+            dispatchQueueDisplay: display,
+            outputWidth: 960, outputHeight: 540,
+            pixelFormat: Int32(kCVPixelFormatType_32BGRA),
+            properties: [
+                CGDisplayStream.showCursor: false,
+                CGDisplayStream.minimumFrameTime: 1.0 / 15.0   // 15fps 够 PIP 小窗
+            ] as CFDictionary,
+            queue: DispatchQueue(label: "com.kinet.camera.screensrc"),
+            handler: { [weak self] _, _, ioSurface, _ in
+                guard let self, let ioSurface = ioSurface else { return }
+                self.onFrame?(ScreenSourceController.id, CIImage(ioSurface: ioSurface))
+            }) else {
+            lastError = "CGDisplayStream 创建失败"
+            return
+        }
+        stream = s
+        s.start()
+        isActive = true
+        lastError = ""
+    }
+
+    private func stop() {
+        stream?.stop()
+        stream = nil
+        isActive = false
+    }
+}
+

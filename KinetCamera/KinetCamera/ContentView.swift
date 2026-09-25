@@ -303,6 +303,7 @@ struct SidePanelView: View {
                 GroupBox(label: Label("自然美颜", systemImage: "wand.and.stars")) {
                     VStack(spacing: 10) {
                         slider("磨皮", $vm.settings.smoothing)
+                        slider("美白", $vm.settings.whitening)
                         slider("提亮", $vm.settings.brightening)
                         slider("锐化", $vm.settings.sharpen, range: 0...1)
                         HStack {

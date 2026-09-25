@@ -125,6 +125,26 @@ final class AutomationServer {
             }
             SyntheticCameraSource.shared.brightnessFactor = f
             reply(conn, json: "{\"ok\":true,\"brightnessFactor\":\(f)}")
+        case ("POST", "/beauty"):
+            // 美颜:平滑+美白一键,如 /beauty?s=0.6&w=0.4 或 /beauty?preset=off
+            var s = 0.0, w = 0.0
+            func param(_ key: String) -> Double? {
+                guard let r = target.range(of: "\(key)=") else { return nil }
+                let str = target[r.upperBound...].components(separatedBy: "&").first ?? ""
+                return Double(str)
+            }
+            if target.contains("preset=off") {
+                s = 0; w = 0
+            } else {
+                s = min(max(param("s") ?? 0.6, 0), 1)
+                w = min(max(param("w") ?? 0.4, 0), 1)
+            }
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: Notification.Name("kinetSetBeauty"), object: nil,
+                    userInfo: ["smoothing": s, "whitening": w])
+            }
+            reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w)}")
         case ("POST", "/pip"):
             // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
             DispatchQueue.main.async { [weak self] in

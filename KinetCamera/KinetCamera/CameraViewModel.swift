@@ -34,6 +34,14 @@ final class CameraViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // 自动化美颜接口
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("kinetSetBeauty"), object: nil, queue: .main
+        ) { [weak self] note in
+            guard let ui = note.userInfo else { return }
+            self?.settings.smoothing = ui["smoothing"] as? Double ?? 0
+            self?.settings.whitening = ui["whitening"] as? Double ?? 0
+        }
     }
 
     /// 画中画当前帧(设备ID → 帧)
@@ -76,22 +84,29 @@ final class CameraViewModel: ObservableObject {
             lastSavedPath = "拍照失败:无画面"
             return
         }
-        let filtered = pipeline.apply(frame, settings: settings, time: .zero)
+        // 主线程快照滤镜设置,避免后台线程读 @Published struct 的 data race
+        let beauty = settings
         Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.processAndSave(filtered)
+            await self?.processAndSave(frame, beauty: beauty)
         }
     }
 
-    /// 拍照全流程:体检 → 低分自动修正 → 复打分 → 落盘(图 + 伴生 JSON 报告)
-    fileprivate func processAndSave(_ filtered: CIImage) async {
+    /// 拍照全流程:体检 → 低分自动修正 → 美颜链 → 落盘(图 + 伴生 JSON 报告)
+    /// 顺序语义:AI 修正对齐技术指标在前,用户显式美颜意图在后(修正不对抗美颜)
+    fileprivate func processAndSave(_ raw: CIImage, beauty: FilterSettings) async {
         let ctx = pipeline.renderContext
-        let analysis = AIAnalyzer.analyze(filtered, context: ctx)
-        var finalImage = filtered
+        let analysis = AIAnalyzer.analyze(raw, context: ctx)
+        var finalImage = raw
         var applied: [String] = []
 
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
         if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
-            (finalImage, applied) = AIAnalyzer.autoCorrect(filtered, analysis: analysis)
+            (finalImage, applied) = AIAnalyzer.autoCorrect(finalImage, analysis: analysis)
+        }
+
+        // 美颜层最后套(与预览同一条链,拍前所见即所得)
+        if !beauty.isNeutral {
+            finalImage = pipeline.apply(finalImage, settings: beauty, time: .zero)
         }
 
         guard let nsImage = CameraManager.ciToNSImage(finalImage) else { return }

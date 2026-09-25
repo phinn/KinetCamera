@@ -93,7 +93,15 @@ final class CameraManager: NSObject, ObservableObject {
         }
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: types, mediaType: .video, position: .unspecified)
-        devices = discovery.devices
+        var found = discovery.devices
+        // 白名单兜底:macOS 14 新增的 DeskView(桌上视角)不在旧 deviceType 白名单里,
+        // 但 devices(for:.video) 能枚举到 —— 全量枚举补差集,避免第二路视频源漏网
+        let all = AVCaptureDevice.devices(for: .video)
+        for d in all where !found.contains(where: { $0.uniqueID == d.uniqueID }) {
+            NSLog("[KinetCamera] discovery whitelist missed: %@ (%@)", d.localizedName, d.uniqueID)
+            found.append(d)
+        }
+        devices = found
         if activeDeviceID == nil || !devices.contains(where: { $0.uniqueID == activeDeviceID }) {
             activeDeviceID = devices.first?.uniqueID
         }

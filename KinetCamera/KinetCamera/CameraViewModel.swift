@@ -91,9 +91,39 @@ final class CameraViewModel: ObservableObject {
         }
     }
 
+    /// 回溯快门:痛点"快门按下去的瞬间,笑刚好停了/手抖了/孩子跑出焦了"。
+    /// 帧环保有快门前 ~2s(60帧@30fps),全量打分后选综合最优帧走正常落盘链。
+    func captureRetro() {
+        let frames = manager.recentFrames(60) ?? []
+        guard frames.count >= 12 else {
+            lastSavedPath = "回溯失败:帧环不足(\(manager.ringCount)/12)"
+            return
+        }
+        let beauty = settings
+        let pipeline = self.pipeline
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let ctx = pipeline.renderContext
+            // 逐帧打分:清晰度为纲,曝光贴近 50 加权;隔帧采样降一半算力
+            var best: (index: Int, score: Double, image: CIImage)?
+            for (i, f) in frames.enumerated() where i % 2 == 0 {
+                let a = AIAnalyzer.analyze(f.image, context: ctx)
+                let score = a.blurScore - abs(a.exposureScore - 50) * 0.5
+                if best == nil || score > best!.score { best = (i, score, f.image) }
+            }
+            guard let pick = best else {
+                await MainActor.run { self.lastSavedPath = "回溯失败:无候选帧" }
+                return
+            }
+            await self.processAndSave(
+                pick.image, beauty: beauty,
+                retroNote: "回溯快门:扫描\(frames.count)帧取#\(pick.index),综合分\(Int(pick.score))")
+        }
+    }
+
     /// 拍照全流程:体检 → 低分自动修正 → 美颜链 → 落盘(图 + 伴生 JSON 报告)
     /// 顺序语义:AI 修正对齐技术指标在前,用户显式美颜意图在后(修正不对抗美颜)
-    fileprivate func processAndSave(_ raw: CIImage, beauty: FilterSettings) async {
+    fileprivate func processAndSave(_ raw: CIImage, beauty: FilterSettings, retroNote: String? = nil) async {
         let ctx = pipeline.renderContext
         let analysis = AIAnalyzer.analyze(raw, context: ctx)
         var finalImage = raw
@@ -127,7 +157,7 @@ final class CameraViewModel: ObservableObject {
         }
 
         await MainActor.run { [weak self] in
-            self?.lastSavedPath = url?.path ?? "保存失败"
+            self?.lastSavedPath = retroNote ?? (url?.path ?? "保存失败")
             self?.lastAnalysis = analysis
             self?.lastCaptureReport = report
         }

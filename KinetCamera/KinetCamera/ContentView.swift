@@ -16,6 +16,12 @@ struct KinetCameraApp: App {
                     .keyboardShortcut("3", modifiers: .command)
                 Button("录制/停止") { NotificationCenter.default.post(name: .kinetToggleRecord, object: nil) }
                     .keyboardShortcut("4", modifiers: .command)
+                Button("夜景模式") { NotificationCenter.default.post(name: .kinetCaptureNight, object: nil) }
+                    .keyboardShortcut("5", modifiers: .command)
+                Button("连拍×10") { NotificationCenter.default.post(name: .kinetCaptureBurst, object: nil) }
+                    .keyboardShortcut("6", modifiers: .command)
+                Button("曝光锁定") { NotificationCenter.default.post(name: .kinetToggleAELock, object: nil) }
+                    .keyboardShortcut("l", modifiers: .command)
             }
         }
     }
@@ -24,6 +30,9 @@ struct KinetCameraApp: App {
 extension Notification.Name {
     static let kinetCapturePhoto = Notification.Name("kinetCapturePhoto")
     static let kinetToggleRecord = Notification.Name("kinetToggleRecord")
+    static let kinetCaptureNight = Notification.Name("kinetCaptureNight")
+    static let kinetCaptureBurst = Notification.Name("kinetCaptureBurst")
+    static let kinetToggleAELock = Notification.Name("kinetToggleAELock")
 }
 
 // MARK: - 主界面
@@ -85,6 +94,15 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetToggleRecord)) { _ in
             vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureNight)) { _ in
+            vm.captureNight()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureBurst)) { _ in
+            vm.captureBurst()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetToggleAELock)) { _ in
+            vm.manager.toggleAELock()
         }
     }
 }
@@ -160,8 +178,30 @@ struct HUDView: View {
 
             Spacer()
 
-            // 快门 + 录像
+            // 快门 + 录像 + 夜景/连拍/AE锁
             HStack(spacing: 20) {
+                Button {
+                    vm.captureNight()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "moon.stars.fill").font(.title3)
+                        Text("夜景").font(.caption2)
+                    }
+                    .foregroundColor(.yellow)
+                }
+                .help("夜景模式:8帧时域平均降噪 ⌘5")
+
+                Button {
+                    vm.captureBurst()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "burst.fill").font(.title3)
+                        Text("连拍").font(.caption2)
+                    }
+                    .foregroundColor(.white)
+                }
+                .help("连拍10张,AI选最清晰 ⌘6")
+
                 Button {
                     vm.capturePhoto()
                 } label: {
@@ -188,6 +228,18 @@ struct HUDView: View {
                 }
                 .buttonStyle(.plain)
                 .help("录制 ⌘4")
+
+                Button {
+                    vm.manager.toggleAELock()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: vm.manager.isAELocked ? "lock.fill" : "lock.open")
+                            .font(.title3)
+                        Text("AE锁").font(.caption2)
+                    }
+                    .foregroundColor(vm.manager.isAELocked ? .orange : .white.opacity(0.75))
+                }
+                .help("曝光锁定 ⌘L(锁定当前测光,逆光/舞台灯不再跳)")
             }
         }
         .padding(.horizontal, 24)
@@ -227,6 +279,20 @@ struct SidePanelView: View {
                             Text(tip)
                                 .font(.callout.weight(.medium))
                                 .foregroundColor(tip.hasPrefix("画质 OK") ? .green : .orange)
+                        }
+                        if let r = vm.lastCaptureReport {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("最近成片修正报告").font(.caption.weight(.semibold))
+                                Text(String(format: "清晰度 %.0f → %.0f  曝光 %.0f → %.0f",
+                                            r.beforeBlur, r.afterBlur, r.beforeExposure, r.afterExposure))
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundColor(r.improved ? .green : .secondary)
+                                if !r.applied.isEmpty {
+                                    Text(r.applied.joined(separator: " · "))
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

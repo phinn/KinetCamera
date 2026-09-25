@@ -13,6 +13,17 @@ struct AIAnalysis: Equatable {
     static let empty = AIAnalysis()
 }
 
+// MARK: - 拍照体检报告(落盘 JSON 伴生文件,可复现)
+struct CaptureReport: Codable {
+    var beforeBlur: Double
+    var beforeExposure: Double
+    var afterBlur: Double
+    var afterExposure: Double
+    var applied: [String]
+    var improved: Bool
+    var faceCount: Int
+}
+
 /// 拍后体检:拉普拉斯方差测糊 + 亮度直方图测曝光 + Vision 人脸构图。
 /// 全部 vDSP 加速,毫秒级,后台线程跑。
 enum AIAnalyzer {
@@ -122,6 +133,69 @@ enum AIAnalyzer {
         let w = max(Int(Double(cg.width) * scale), 8)
         let h = max(Int(Double(cg.height) * scale), 8)
         return grayViaRGBA(cg, w: w, h: h)
+    }
+
+    /// 低分画面 → 修正链。返回(修正后图, 施加的修正名列表)。
+    static func autoCorrect(_ image: CIImage, analysis: AIAnalysis) -> (CIImage, [String]) {
+        var out = image
+        var applied: [String] = []
+
+        if analysis.exposureScore < 35 {
+            out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.8])
+            out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.25])
+            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.06])
+            applied.append("提亮+0.8EV")
+        } else if analysis.exposureScore > 78 {
+            out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.55])
+            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.1])
+            applied.append("压高光-0.55EV")
+        } else if analysis.exposureScore < 42 {
+            out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.35])
+            applied.append("轻提亮+0.35EV")
+        }
+
+        if analysis.blurScore < 40 {
+            // 锐化 + 微反差,拉克普拉斯方差
+            out = out.applyingFilter("CISharpenLuminance", parameters: [
+                kCIInputRadiusKey: 6, "inputSharpness": 0.7,
+            ])
+            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.05])
+            applied.append("AI补锐")
+        } else if analysis.blurScore < 55 {
+            out = out.applyingFilter("CISharpenLuminance", parameters: [
+                kCIInputRadiusKey: 4, "inputSharpness": 0.4,
+            ])
+            applied.append("轻补锐")
+        }
+
+        if analysis.faceCount > 0 && analysis.exposureScore >= 35 && analysis.exposureScore <= 78 {
+            out = out.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 6500),
+            ])
+            applied.append("人像色温中性化")
+        }
+        return (out, applied)
+    }
+
+    /// 修正效果量化:对修正后图重打分
+    static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double) {
+        guard let cg = context.createCGImage(image, from: image.extent) else { return (0, 50) }
+        return (sharpnessScore(cgImage: cg), exposureScore(cgImage: cg))
+    }
+
+    /// 亮度均值(CIAreaAverage,AE 闭环用,微秒级)
+    static func quickMean(_ image: CIImage, context: CIContext) -> Double {
+        let extent = image.extent
+        guard extent.width > 1, extent.height > 1 else { return 0 }
+        let avg = image.applyingFilter("CIAreaAverage", parameters: [
+            kCIInputExtentKey: CIVector(cgRect: extent),
+        ])
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(avg, toBitmap: &pixel, rowBytes: 4,
+                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        // 相对亮度(Rec.601 加权,归一 0-1)
+        return (Double(pixel[0]) * 0.299 + Double(pixel[1]) * 0.587 + Double(pixel[2]) * 0.114) / 255.0
     }
 
     /// 稳定路径:转 RGBA8 再 CPU 转灰度

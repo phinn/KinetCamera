@@ -101,6 +101,46 @@ final class AutomationServer {
                 NotificationCenter.default.post(name: .kinetToggleRecord, object: nil)
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"record-toggle\"}")
+        case ("POST", "/night"):
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kinetCaptureNight, object: nil)
+            }
+            reply(conn, json: "{\"ok\":true,\"action\":\"night\"}")
+        case ("POST", "/burst"):
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kinetCaptureBurst, object: nil)
+            }
+            reply(conn, json: "{\"ok\":true,\"action\":\"burst\"}")
+        case ("POST", "/aelock"):
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kinetToggleAELock, object: nil)
+            }
+            reply(conn, json: "{\"ok\":true,\"action\":\"aelock-toggle\"}")
+        case ("POST", "/brightness"):
+            // AE 闭环验证:模拟场景光变化,如 /brightness?f=0.4
+            var f = 1.0
+            if let r = target.range(of: "f=") {
+                let s = target[r.upperBound...].components(separatedBy: "&").first ?? ""
+                f = Double(s) ?? 1.0
+            }
+            SyntheticCameraSource.shared.brightnessFactor = f
+            reply(conn, json: "{\"ok\":true,\"brightnessFactor\":\(f)}")
+        case ("POST", "/pip"):
+            // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                if let range = target.range(of: "id=") {
+                    let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
+                    vm.togglePIP(id)
+                    self.reply(conn, json: "{\"ok\":true,\"pip\":\(id.isEmpty ? "\"?\"" : "\"\(id)\"")}")
+                } else if target.contains("on=1") {
+                    let others = vm.manager.devices.filter { $0.uniqueID != vm.manager.activeDeviceID }
+                    for d in others { vm.togglePIP(d.uniqueID) }
+                    self.reply(conn, json: "{\"ok\":true,\"pipAll\":\(others.count)}")
+                } else {
+                    self.reply(conn, json: "{\"error\":\"need id= or on=1\"}", status: "400 Bad Request")
+                }
+            }
         case ("POST", "/frame"):
             let wantProcessed = target.contains("mode=processed")
             respondFrame(conn, processed: wantProcessed)
@@ -140,6 +180,14 @@ final class AutomationServer {
                 "audioFrames": m.audioFrames,
                 "drawCount": vm.renderDrawCount,
                 "drawState": vm.renderDrawState,
+                "ringCount": m.ringCount,
+                "aeLocked": m.isAELocked,
+                "pipFrames": vm.pipFrames.map { "\($0.key):\($0.value.extent.width)x\(Int($0.value.extent.height))" },
+                "lastReport": vm.lastCaptureReport.map {
+                    ["beforeBlur": $0.beforeBlur, "afterBlur": $0.afterBlur,
+                     "beforeExp": $0.beforeExposure, "afterExp": $0.afterExposure,
+                     "applied": $0.applied.joined(separator: ","), "improved": $0.improved] as [String: Any]
+                } ?? [:],
             ]
         guard let data = try? JSONSerialization.data(withJSONObject: snap, options: [.sortedKeys]) else {
             return "{\"error\":\"serialize failed\"}"

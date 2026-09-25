@@ -152,18 +152,33 @@ final class AutomationServer {
                 vm.captureRetro()
                 self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\"}")
             }
-        case ("POST", "/pip"):
-            // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
+        case ("POST", "/switch"):
+            // /switch?id=<deviceID> 切主摄
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                if let range = target.range(of: "id=") {
+                    let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
+                    vm.manager.switchDevice(to: id)
+                    self.reply(conn, json: "{\"ok\":true,\"active\":\"\(id)\"}")
+                } else {
+                    self.reply(conn, json: "{\"error\":\"need id=\"}", status: "400 Bad Request")
+                }
+            }
+        case ("POST", "/pip"):            // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }
                 if let range = target.range(of: "id=") {
                     let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
                     vm.togglePIP(id)
-                    self.reply(conn, json: "{\"ok\":true,\"pip\":\(id.isEmpty ? "\"?\"" : "\"\(id)\"")}")
+                    self.reply(conn, json: "{\"ok\":true,\"pip\":\"\(id)\"}")
                 } else if target.contains("on=1") {
+                    // 全部可用信号源入 PIP:非主摄摄像头 + 屏幕流
                     let others = vm.manager.devices.filter { $0.uniqueID != vm.manager.activeDeviceID }
                     for d in others { vm.togglePIP(d.uniqueID) }
-                    self.reply(conn, json: "{\"ok\":true,\"pipAll\":\(others.count)}")
+                    if !vm.manager.pipDeviceIDs.contains(ScreenSourceController.id) {
+                        vm.togglePIP(ScreenSourceController.id)
+                    }
+                    self.reply(conn, json: "{\"ok\":true,\"pipAll\":\(others.count + 1)}")
                 } else {
                     self.reply(conn, json: "{\"error\":\"need id= or on=1\"}", status: "400 Bad Request")
                 }
@@ -190,6 +205,7 @@ final class AutomationServer {
                 "recordingSeconds": (m.recordingSeconds * 10).rounded() / 10,
                 "pipDeviceIDs": m.pipDeviceIDs,
                 "pipFrameCount": vm.pipFrames.count,
+                "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,
                 "blur": (vm.lastAnalysis.blurScore * 10).rounded() / 10,
                 "exposure": (vm.lastAnalysis.exposureScore * 10).rounded() / 10,

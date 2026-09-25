@@ -183,32 +183,87 @@ final class CameraViewModel: ObservableObject {
                 return
             }
             let w = first.width, h = first.height
-            // 8 帧 RGBA 累加 → 平均 → 单帧
+
+            // —— 运动补偿:灰度块匹配估全局平移,超限弃帧,防时域平均鬼影 ——
+            func grayBytes(_ cg: CGImage) -> [UInt8]? {
+                guard let ctx = CGContext(
+                    data: nil, width: w, height: h,
+                    bitsPerComponent: 8, bytesPerRow: w,
+                    space: CGColorSpaceCreateDeviceGray(),
+                    bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+                guard let data = ctx.data else { return nil }
+                return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: w * h))
+            }
+            let grays = cgs.compactMap { grayBytes($0) }
+            guard grays.count == 8 else {
+                await MainActor.run { [weak self] in self?.lastSavedPath = "夜景失败:灰度解码失败" }
+                return
+            }
+            let refGray = grays[0]
+            // SAD(stride 4)在 ±2px 窗口内搜最佳平移
+            func sadAt(_ g: [UInt8], dx: Int, dy: Int) -> Int {
+                var sum = 0
+                var y = 2
+                while y < h - 2 {
+                    var x = 2
+                    while x < w - 2 {
+                        let ry = y + dy, rx = x + dx
+                        if ry >= 0, ry < h, rx >= 0, rx < w {
+                            sum += abs(Int(g[y * w + x]) - Int(refGray[ry * w + rx]))
+                        }
+                        x += 4
+                    }
+                    y += 4
+                }
+                return sum
+            }
+            var offsets: [(dx: Int, dy: Int)] = []
+            var droppedMotion = 0
+            for g in grays {
+                var best = (dx: 0, dy: 0, sad: sadAt(g, dx: 0, dy: 0))
+                for dy in -2...2 {
+                    for dx in -2...2 where dx != 0 || dy != 0 {
+                        let s = sadAt(g, dx: dx, dy: dy)
+                        if s < best.sad { best = (dx, dy, s) }
+                    }
+                }
+                // 平移超出补偿窗口 → 运动过猛,弃帧防鬼影
+                if max(abs(best.dx), abs(best.dy)) >= 2 { droppedMotion += 1; continue }
+                offsets.append((best.dx, best.dy))
+            }
+            let kept = offsets.count
+            guard kept >= 4 else {
+                await MainActor.run { [weak self] in
+                    self?.lastSavedPath = "夜景失败:运动帧过多(\(droppedMotion)/8弃用)"
+                }
+                return
+            }
+
             guard let outCtx = CGContext(
                 data: nil, width: w, height: h,
                 bitsPerComponent: 8, bytesPerRow: w * 4,
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-            guard let base = outCtx.makeImage() else { return }
 
             var acc = [UInt32](repeating: 0, count: w * h * 4)
-            for cg in cgs {
-                guard let frameCtx = CGContext(
-                    data: nil, width: w, height: h,
-                    bitsPerComponent: 8, bytesPerRow: w * 4,
-                    space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-                    let data = frameCtx.data else { continue }
-                frameCtx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-                data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+            outCtx.setFillColor(CGColor(gray: 0, alpha: 1))
+            for (idx, cg) in cgs.enumerated() where idx < offsets.count {
+                let off = offsets[idx]
+                // 按估计平移对齐后累加(补偿帧间全局运动)
+                outCtx.clear(CGRect(x: 0, y: 0, width: w, height: h))
+                outCtx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                outCtx.draw(cg, in: CGRect(x: CGFloat(off.dx), y: CGFloat(off.dy), width: CGFloat(w), height: CGFloat(h)))
+                guard let data = outCtx.data else { continue }
                 let p = data.assumingMemoryBound(to: UInt8.self)
                 for i in 0..<(w * h * 4) { acc[i] &+= UInt32(p[i]) }
             }
-            // 平均 + 夜景增益(等效 8 倍感光,压噪声靠时域平均)
+            // 平均 + 夜景增益(等效多倍感光,压噪声靠时域平均)
             var outBytes = [UInt8](repeating: 0, count: w * h * 4)
             let gain: Float = 1.9   // 平均后亮度回拉,补偿时域平均的"变暗"
+            let denom = Float(kept)
             for i in 0..<(w * h * 4) {
-                let avg = Float(acc[i]) / 8.0
+                let avg = Float(acc[i]) / denom
                 outBytes[i] = UInt8(max(0, min(255, Int(avg * gain))))
             }
             let composed = outBytes.withUnsafeBytes { ptr -> CGImage? in
@@ -225,7 +280,8 @@ final class CameraViewModel: ObservableObject {
             let composedCI = CIImage(cgImage: composedCG)
             let analysis = AIAnalyzer.analyze(composedCI, context: ctx)
             var final = composedCI
-            var applied = ["8帧时域平均", "夜景增益x1.9"]
+            var applied = ["8帧时域平均", "运动补偿对齐", "夜景增益x1.9"]
+            if droppedMotion > 0 { applied.append("弃运动帧\(droppedMotion)") }
             if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
                 let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)
                 final = fixed

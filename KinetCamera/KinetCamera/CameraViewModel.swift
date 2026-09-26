@@ -359,4 +359,24 @@ final class CameraViewModel: ObservableObject {
     // MARK: - 相机操作转发
     func switchDevice(_ id: String) { manager.switchDevice(to: id) }
     func togglePIP(_ id: String) { manager.togglePIP(id) }
+
+    // MARK: - 手动曝光/对焦
+    /// 手动曝光走滤镜链软件 EV(macOS 硬件无曝光 API,FilterPipeline 段位 0)
+    var exposureBiasRange: ClosedRange<Double> { -2.0...2.0 }
+    var aeBiasEV: Double {
+        get { settings.exposureEV }
+        set { settings.exposureEV = newValue }
+    }
+
+    /// 对焦锁定/交还(macOS 无 lensPosition 手动对焦,用模式切换+峰值验证工作流)
+    var isFocusLocked: Bool = false
+    func toggleFocusLock() {
+        isFocusLocked.toggle()
+        manager.setFocusMode(isFocusLocked ? .locked : .continuousAutoFocus)
+    }
+
+    /// 对焦峰值开关(渲染层,任意源可用)
+    func setFocusPeaking(_ on: Bool) {
+        settings.focusPeaking = on ? 0.8 : 0
+    }
 }

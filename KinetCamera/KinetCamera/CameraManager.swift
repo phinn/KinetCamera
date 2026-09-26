@@ -209,6 +209,9 @@ final class CameraManager: NSObject, ObservableObject {
         return parts.isEmpty ? "无PIP" : parts.joined(separator: " + ")
     }
 
+    /// 屏流帧计数透传给 /status(活帧判定:两次采样递增)
+    var screenFrameCount: Int { screenSource.frameCount }
+
     private func rebuildSessionLocked() {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -345,9 +348,38 @@ final class CameraManager: NSObject, ObservableObject {
         return abs(aeSmoothedEV) > 0.02 ? aeSmoothedEV : 0
     }
 
-    /// 配置帧率(不动 activeFormat:实测对内建 FaceTime 相机改格式会让 data output 静默断流)
-    private func unlockMaxResolutionLocked(_ device: AVCaptureDevice) {
+    // MARK: - 手动曝光(软件 EV) + 对焦控制
+    // macOS AVFoundation 硬件手动曝光全墙:exposureModeCustom/duration/ISO 仅 iOS,
+    // exposureTargetBias 也是 iOS only(get-only);setFocusModeLocked(lensPosition:) 同样不可用——
+    // 三者均已逐一编译实证,这是平台事实而非实现缺口。
+    // → 手动曝光走软件 EV 档:管线增益 2^EV,±2 EV 连续可调(见 FilterPipeline 段位 0),
+    //   与 AE lock 互补:EV 管"基准明暗",AE lock 管"定格"。
+    // → 对焦:macOS 可用面 = focusMode 切换(.locked 锁定当前对焦防拉风箱 / .continuousAutoFocus 交还系统),
+    //   配合渲染层对焦峰值(focusPeaking)完成"看着峰值验证合焦"的工作流。
+
+    /// 当前主摄设备(会话线程安全读取)
+    private var activeMainDevice: AVCaptureDevice? {
+        sessionQueue.sync {
+            session.inputs.compactMap { ($0 as? AVCaptureDeviceInput)?.device }
+                .first { $0.hasMediaType(.video) }
+        }
+    }
+
+    /// 对焦模式切换: .locked = 锁定当前对焦(防拉风箱), .continuousAutoFocus = 交还系统
+    func setFocusMode(_ mode: AVCaptureDevice.FocusMode) {
+        guard let device = activeMainDevice, device.isFocusModeSupported(mode) else { return }
         do {
+            try device.lockForConfiguration()
+            device.focusMode = mode
+            device.unlockForConfiguration()
+            NSLog("[KinetCamera] focus mode → \(mode.rawValue)")
+        } catch {
+            NSLog("[KinetCamera] focus mode 失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 配置帧率(不动 activeFormat:实测对内建 FaceTime 相机改格式会让 data output 静默断流)
+    private func unlockMaxResolutionLocked(_ device: AVCaptureDevice) {        do {
             try device.lockForConfiguration()
             let fpsMax = device.activeFormat.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 30.0
             if fpsMax >= 30.0 {

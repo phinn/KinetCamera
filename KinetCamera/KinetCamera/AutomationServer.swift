@@ -145,8 +145,29 @@ final class AutomationServer {
                     userInfo: ["smoothing": s, "whitening": w])
             }
             reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w)}")
-        case ("POST", "/retro"):
-            // 回溯快门:扫描快门前2s帧环,AI选综合最优帧落盘
+        case ("POST", "/exposure"):
+            // 手动曝光(软件EV档): /exposure?ev=1.0 或 /exposure?ev=auto(回0)
+            var ev = 0.0
+            if let r = target.range(of: "ev=") {
+                let s = target[r.upperBound...].components(separatedBy: "&").first ?? ""
+                ev = s == "auto" ? 0 : (Double(s) ?? 0)
+            }
+            DispatchQueue.main.async { self.vm?.settings.exposureEV = max(-2, min(2, ev)) }
+            reply(conn, json: "{\"ok\":true,\"exposureEV\":\(ev)}")
+        case ("POST", "/focus"):
+            // 对焦锁: /focus?mode=lock(防拉风箱) / mode=auto(交还系统)
+            let lock = !target.contains("mode=auto")
+            DispatchQueue.main.async {
+                if lock { if !(self.vm?.isFocusLocked ?? false) { self.vm?.toggleFocusLock() } }
+                else { if self.vm?.isFocusLocked == true { self.vm?.toggleFocusLock() } }
+            }
+            reply(conn, json: "{\"ok\":true,\"focusLocked\":\(lock)}")
+        case ("POST", "/peaking"):
+            // 对焦峰值: /peaking?on=1 / on=0
+            let on = target.contains("on=1")
+            DispatchQueue.main.async { self.vm?.setFocusPeaking(on) }
+            reply(conn, json: "{\"ok\":true,\"focusPeaking\":\(on ? 0.8 : 0)}")
+        case ("POST", "/retro"):            // 回溯快门:扫描快门前2s帧环,AI选综合最优帧落盘
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }
                 vm.captureRetro()
@@ -205,6 +226,7 @@ final class AutomationServer {
                 "recordingSeconds": (m.recordingSeconds * 10).rounded() / 10,
                 "pipDeviceIDs": m.pipDeviceIDs,
                 "pipFrameCount": vm.pipFrames.count,
+                "screenFrameCount": m.screenFrameCount,
                 "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,
                 "blur": (vm.lastAnalysis.blurScore * 10).rounded() / 10,

@@ -339,6 +339,33 @@ struct SidePanelView: View {
                     .padding(.vertical, 4)
                 }
 
+                // 手动曝光 / 对焦(专业档)
+                GroupBox(label: Label("手动曝光 / 对焦", systemImage: "camera.aperture")) {
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text("曝光EV").font(.caption).frame(width: 56, alignment: .leading)
+                            Slider(value: $vm.aeBiasEV, in: vm.exposureBiasRange)
+                            Text(String(format: "%+.1f", vm.aeBiasEV))
+                                .font(.caption.monospacedDigit()).frame(width: 40)
+                        }
+                        HStack {
+                            Button(vm.aeBiasEV == 0 ? "" : "EV归零") { vm.aeBiasEV = 0 }
+                                .font(.caption)
+                                .disabled(vm.aeBiasEV == 0)
+                            Spacer()
+                            Button(vm.isFocusLocked ? "解除对焦锁" : "锁定对焦") {
+                                vm.toggleFocusLock()
+                            }
+                            .font(.caption)
+                            Button(vm.settings.focusPeaking > 0 ? "关闭峰值" : "对焦峰值") {
+                                vm.setFocusPeaking(vm.settings.focusPeaking == 0)
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 // 多摄画中画
                 if vm.manager.devices.count > 1 {
                     GroupBox(label: Label("多摄像头(\(vm.manager.devices.count))", systemImage: "rectangle.on.rectangle")) {

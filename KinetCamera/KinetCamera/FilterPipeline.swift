@@ -52,6 +52,8 @@ final class FilterPipeline {
     // 人像分割(后台低频推理,mask 缓存复用)
     private var segMask: CIImage?
     private var segBusy = false
+    /// 最近一次小域 CPU pass 估计的噪声 σ(0-255 域),pass4' 全尺寸焊接共用
+    private var lastNoiseSigma: Float = 5.3
     private let segLock = NSLock()
 
     /// 实时处理入口:每帧调用
@@ -220,19 +222,40 @@ final class FilterPipeline {
                         outB[i] = UInt8(max(0, min(255, b + 0.05 * lift * b + 6 * lift)))
                     }
                 }
+                // ---- CPU pass 2.5:噪声水平估计(自适应保边阈值的基础) ----
+                // 高频残差 MAD×1.4826 = 稳健 σ 估计(MAD 对结构边缘不敏感,均值会被发丝拉高)
+                // σ_255 = 噪声标准差(0-255 域)。暗光高 ISO → σ 大 → 阈值 t 大(压噪优先);
+                // 棚拍/好光 → σ 小 → t 小(毛孔细节保留)。t = 3σ:3 倍标准差外的才当结构。
+                var absDevs = [Float](repeating: 0, count: n)
+                for i in 0..<n {
+                    let r0 = Float(bytes[i*4]); let g0 = Float(g.r[i]); let b0 = Float(bytes[i*4+2])
+                    let gray = 0.299 * r0 + 0.587 * Float(g.g[i]) + 0.114 * b0
+                    let grayS = 0.299 * g0 + 0.587 * Float(g.g[i]) + 0.114 * Float(g.b[i])
+                    absDevs[i] = abs(gray - grayS)
+                }
+                absDevs.sort()
+                let medianDev = absDevs[n / 2]
+                let noiseSigma = medianDev * 1.4826
+                // 小域已把噪声平均掉一部分(Lanczos 降采样率 scale),换算回全尺寸域的 σ
+                // 全尺寸磨皮值 = 小域升采样,其噪声 ≈ 小域σ × (1/scale) × 插值增益(≈1)
+                let fullSigma = noiseSigma / Float(scale)
+                let adaptiveT = max(Float(8), fullSigma * 3)
+                lastNoiseSigma = fullSigma
+                if quality == .photo { NSLog("[KinetCamera] noiseEstimate smallDomain=%.2f full=%.2f t=%.1f", noiseSigma, fullSigma, adaptiveT) }
+
                 // ---- CPU pass 4:软阈值高频回注(保发丝、压毛孔) ----
                 // 全带回注会把毛孔噪声原样带回;按局部幅度区分:
                 // 发丝/睫毛级(|hf|大)→ 权重趋近 k 全额回;毛孔噪声(|hf|小)→ 权重趋 0 压掉。
                 if smoothing > 0 {
-                    // 边缘感知混合(不是"回注"):|hf| 大 = 真实结构(发丝/眉眼/轮廓)→ 取原图;
-                    // |hf| 小 = 毛孔噪声 → 取磨皮值。|hf|=guided 与原图的差,即被磨掉的部分。
-                    let t: Float = 16.0
+                    // 软阈值:2.5σ 以内视为噪声全额压掉,超出部分按比例回注(真结构 |hf|>>σ 全回)
+                    let thr: Float = max(Float(8), fullSigma * 1.5)
                     var outs: [[UInt8]] = [outR, outG, outB]
                     for i in 0..<n {
                         for c in 0..<3 {
                             let o = Float(bytes[i*4+c])
                             let gi = Float(outs[c][i])
-                            let wEdge = min(Float(1), abs(o - gi) / t)
+                            let hf = abs(o - gi)
+                            let wEdge = hf > thr ? (hf - thr) / hf : 0
                             outs[c][i] = UInt8(max(0, min(255, gi + wEdge * (o - gi))))
                         }
                     }
@@ -256,7 +279,8 @@ final class FilterPipeline {
                        // 全尺寸原帧作参照:小域 bytes 的边界已被降采样糊化,不能当结构依据
                        let fullCG = renderContext.createCGImage(input, from: input.extent),
                        let (fullBytes, fw, fh) = GuidedFilter.rgba(of: fullCG), fw == uw {
-                        let t: Float = 16.0
+                        // 软阈值(与 pass4 同源):2.5σ 内压掉,超出按比例回注
+                        let thr: Float = max(8, lastNoiseSigma * 1.5)
                         var fin = [UInt8](repeating: 0, count: uw * uh * 4)
                         for i in 0..<(uw * uh) {
                             let i4 = i * 4
@@ -264,7 +288,7 @@ final class FilterPipeline {
                             let gR = Float(upBytes[i4]), gG = Float(upBytes[i4+1]), gB = Float(upBytes[i4+2])
                             // 跨通道取 |hf| 最大者作边缘置信度(避免单通道偶然抵消)
                             let m = max(abs(oR-gR), abs(oG-gG), abs(oB-gB))
-                            let wE = min(Float(1), m / t)
+                            let wE = m > thr ? (m - thr) / m : 0
                             fin[i4]   = UInt8(max(0, min(255, gR + wE * (oR - gR))))
                             fin[i4+1] = UInt8(max(0, min(255, gG + wE * (oG - gG))))
                             fin[i4+2] = UInt8(max(0, min(255, gB + wE * (oB - gB))))

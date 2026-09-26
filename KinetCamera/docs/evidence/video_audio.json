@@ -1,0 +1,6 @@
+{
+  "audioPeak" : 0,
+  "audioPeakDB" : -200,
+  "note" : "音轨静音:采集源无声音输入(录制中已实时告警)",
+  "audioSilent" : true
+}

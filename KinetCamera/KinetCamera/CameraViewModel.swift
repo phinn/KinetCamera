@@ -13,6 +13,16 @@ final class CameraViewModel: ObservableObject {
     @Published var lastAnalysis = AIAnalysis.empty
     @Published var showGrid = true
     @Published var lastCaptureReport: CaptureReport?
+    /// AI 修正档位开关(每类修正独立启用;用户显式关掉的项不再自动触发)
+    @Published var aiToggles: [AICorrectionKind: Bool] = Dictionary(
+        uniqueKeysWithValues: AICorrectionKind.allCases.map { ($0, true) }) {
+        didSet { UserDefaults.standard.set(
+            Dictionary(uniqueKeysWithValues: aiToggles.map { ($0.key.rawValue, $0.value) }),
+            forKey: "kinet.aiToggles") }
+    }
+    var enabledAICorrections: Set<AICorrectionKind> {
+        Set(aiToggles.filter { $0.value }.keys)
+    }
     @Published var audioSilentWarning = false      // 录音静音告警(录制中实时)
     @Published var lastVideoAudioSilent = false    // 上段录像成片是否静音(JSON 打标用)
 
@@ -23,6 +33,11 @@ final class CameraViewModel: ObservableObject {
     var frameCount = 0
 
     init() {
+        // 恢复持久化的档位开关(缺省项默认 true:新增档位自动启用)
+        let saved = UserDefaults.standard.dictionary(forKey: "kinet.aiToggles") as? [String: Bool] ?? [:]
+        for kind in AICorrectionKind.allCases {
+            if let v = saved[kind.rawValue] { aiToggles[kind] = v }
+        }
         manager.onFrame = { [weak self] image, _ in
             self?.handleFrame(image)
         }
@@ -60,6 +75,7 @@ final class CameraViewModel: ObservableObject {
             self?.settings.whitening = ui["whitening"] as? Double ?? 0
             self?.settings.backgroundBlur = ui["backgroundBlur"] as? Double ?? 0
             self?.settings.faceSlim = ui["faceSlim"] as? Double ?? 0
+            if let sh = ui["sharpen"] as? Double { self?.settings.sharpen = sh }
         }
     }
 
@@ -171,7 +187,8 @@ final class CameraViewModel: ObservableObject {
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
         // 美颜纳入修正链:人脸在场即触发质感兜底(用户显式开磨皮时 AIAnalyzer 内自动跳过防双重涂抹)
         if analysis.blurScore < 55 || analysis.faceCount > 0 || abs(analysis.colorCast) >= 8 || abs(analysis.exposureBias) > 0.18 {
-            let corrected = AIAnalyzer.autoCorrect(raw, analysis: analysis, userSmoothing: beauty.smoothing)
+            let corrected = AIAnalyzer.autoCorrect(raw, analysis: analysis, userSmoothing: beauty.smoothing,
+                                                   enabled: enabledAICorrections)
             finalImage = corrected.image
             applied += corrected.appliedNames   // 追加不覆盖:保留前面的 PIP同框 标记
         }

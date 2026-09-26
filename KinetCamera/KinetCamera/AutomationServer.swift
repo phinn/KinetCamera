@@ -162,19 +162,22 @@ final class AutomationServer {
                 return Double(str)
             }
             var slim = 0.0
+            var sharpen: Double? = nil
             if target.contains("preset=off") {
                 s = 0; w = 0; b = 0; slim = 0
+                sharpen = 0
             } else {
                 s = min(max(param("s") ?? 0.6, 0), 1)
                 w = min(max(param("w") ?? 0.4, 0), 1)
                 b = min(max(param("b") ?? 0, 0), 1)
                 slim = min(max(param("slim") ?? 0, 0), 1)
+                if let p = param("sh") { sharpen = min(max(p, 0), 1) }
             }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
                     name: Notification.Name("kinetSetBeauty"), object: nil,
-                    userInfo: ["smoothing": s, "whitening": w, "backgroundBlur": b,
-                               "faceSlim": slim])
+                    userInfo: ["smoothing": s, "whitening": w, "backgroundBlur": b, "faceSlim": slim,
+                               "sharpen": sharpen])
             }
             reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w),\"backgroundBlur\":\(b),\"faceSlim\":\(slim)}")
         case ("POST", "/exposure"):

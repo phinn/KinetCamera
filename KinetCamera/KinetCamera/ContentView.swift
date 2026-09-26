@@ -497,7 +497,45 @@ struct SidePanelView: View {
                     .padding(.vertical, 4)
                 }
 
-                // AI 修正
+                // AI 修正(档位开关 + 实时报告)
+                GroupBox(label: Label("AI 修正", systemImage: "wand.and.rays")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        // 档位开关卡片:每类修正独立启停,关掉的项拍照时不再自动触发
+                        ForEach(AICorrectionKind.allCases, id: \.self) { kind in
+                            Toggle(isOn: Binding(
+                                get: { vm.aiToggles[kind] ?? true },
+                                set: { vm.aiToggles[kind] = $0 })) {
+                                HStack {
+                                    Text(kind.rawValue).font(.caption)
+                                    Spacer()
+                                    if (vm.aiToggles[kind] ?? true) == false {
+                                        Text("已停用").font(.caption2).foregroundColor(.orange)
+                                    }
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                        }
+                        Divider()
+                        // 最近成片:AI 实际做了什么(实时明细)
+                        if let r = vm.lastCaptureReport, !r.applied.isEmpty {
+                            Text("最近成片修正明细").font(.caption2.weight(.semibold))
+                            ForEach(r.applied, id: \.self) { item in
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.caption2).foregroundColor(.green)
+                                    Text(item).font(.caption2)
+                                }
+                            }
+                        } else {
+                            Text("最近一张无需修正").font(.caption2).foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // AI 画面
                 GroupBox(label: Label("AI 画面", systemImage: "person.and.background.dotted")) {
                     VStack(spacing: 10) {
                         slider("人像虚化", $vm.settings.backgroundBlur)

@@ -30,6 +30,28 @@ struct CaptureReport: Codable, Equatable {
     var afterColorCast: Double = 0
 }
 
+/// AI 修正分类(用户可独立开关的档位)。rawValue = UI/持久化 key。
+enum AICorrectionKind: String, CaseIterable, Codable {
+    case exposure = "曝光修正"        // 暗光增强/提亮/压高光/轻提亮
+    case whiteBalance = "白平衡"      // 去暖/去冷 + 链尾二次白平衡
+    case leveling = "水平校正"
+    case distortion = "畸变校正"
+    case sharpen = "AI补锐"
+    case facePolish = "人像质感兜底"  // 人脸在场的链内磨皮美白(与用户滑杆美颜互补)
+
+    /// 该档位在 applied 报告里的显示名前缀(用于报告行 ↔ 档位映射)
+    var appliedMarkers: [String] {
+        switch self {
+        case .exposure: return ["暗光增强", "提亮+", "压高光", "轻提亮"]
+        case .whiteBalance: return ["AI去暖", "AI去冷", "二次白平衡"]
+        case .leveling: return ["水平校正"]
+        case .distortion: return ["广角畸变校正"]
+        case .sharpen: return ["AI补锐", "轻补锐"]
+        case .facePolish: return ["AI美颜"]
+        }
+    }
+}
+
 /// 拍后体检:拉普拉斯方差测糊 + 亮度直方图测曝光 + Vision 人脸构图。
 /// 全部 vDSP 加速,毫秒级,后台线程跑。
 enum AIAnalyzer {
@@ -226,7 +248,8 @@ enum AIAnalyzer {
 
     /// 低分画面 → 修正链。返回(修正后图, 施加的修正名列表)。
     /// userSmoothing > 0.2 视为用户显式磨皮,自动美颜步跳过(防双重涂抹)。
-    static func autoCorrect(_ image: CIImage, analysis: AIAnalysis, userSmoothing: Double = 0) -> (image: CIImage, appliedNames: [String]) {
+    static func autoCorrect(_ image: CIImage, analysis: AIAnalysis, userSmoothing: Double = 0,
+                            enabled: Set<AICorrectionKind> = Set(AICorrectionKind.allCases)) -> (image: CIImage, appliedNames: [String]) {
         var out = image
         var applied: [String] = []
 
@@ -234,23 +257,23 @@ enum AIAnalyzer {
         // "过曝"压光是方向性 bug:高分恰恰是接近理想,导致白背景正常照片被反向压光/提亮。
         // 暗光增强档(bias < -0.45,严重欠曝)≠ 普通提亮:亮度拉起 + 降噪 + 局部对比,
         // 避免暗部噪声一起放大(普通欠曝只提亮不降噪)
-        if analysis.exposureBias < -0.45 {
+        if enabled.contains(.exposure), analysis.exposureBias < -0.45 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 1.3])
             out = out.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.78])   // 抬暗部少压高光
             out = out.applyingFilter("CINoiseReduction", parameters: ["inputNoiseLevel": 0.06, "inputSharpness": 0.6])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.3])
             .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("暗光增强(亮度+降噪+对比)")  // 对比微调用gamma替代。坑:CIColorControls contrast线性域暗部clamp纯黑(黑格62→0)/CIToneCurve mac27全黑,双弃  // 提亮放大的色偏由链尾终末二次WB统一收敛
-        } else if analysis.exposureBias < -0.18 {
+        } else if enabled.contains(.exposure), analysis.exposureBias < -0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.8])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.25])
             .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("提亮+0.8EV")
-        } else if analysis.exposureBias > 0.18 {
+        } else if enabled.contains(.exposure), analysis.exposureBias > 0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.55])
             .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("压高光-0.55EV")
-        } else if analysis.exposureBias < -0.08 {
+        } else if enabled.contains(.exposure), analysis.exposureBias < -0.08 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.35])
             applied.append("轻提亮+0.35EV")
         }
@@ -259,7 +282,7 @@ enum AIAnalyzer {
         // 用 CIColorMatrix(物理直观:cast>0 压 R 抬 B),不用 CITemperatureAndTint ——
         // 其 neutral 滑块有效域窄,超域输出全黑(harness 实测 neutral=11862 全黑)
         let wbGain = whiteBalanceGain(forColorCast: analysis.colorCast)
-        if wbGain > 0 {
+        if enabled.contains(.whiteBalance), wbGain > 0 {
             // wbGain 0.12/0.24/0.35 → R、B 各反向收 |cast| 方向
             let rGain = analysis.colorCast > 0 ? 1.0 - wbGain : 1.0 + wbGain
             let bGain = analysis.colorCast > 0 ? 1.0 + wbGain : 1.0 - wbGain
@@ -279,7 +302,7 @@ enum AIAnalyzer {
         // 修法:弃用 CIStraightenFilter,显式 CGAffineTransform(rotationAngle) 旋转 +
         //   extent 归零 + 中心 94% 裁切。CGAffineTransform 行为已用蓝线几何验证:
         //   Vision 读 +6.5° 的图,rotationAngle=+6.5° 精确转正(0.00°),同号修正。
-        if abs(analysis.tiltAngle) > 1.2 {
+        if enabled.contains(.leveling), abs(analysis.tiltAngle) > 1.2 {
             let theta = CGFloat(analysis.tiltAngle * .pi / 180)
             // 绕图像中心旋转(标准做法):先平移中心到原点 → 旋转 → 平移回。
             // 坑:直接 transformed(rotationAngle) 是绕原点转,内容会甩出 extent;再归零 extent 时
@@ -307,7 +330,7 @@ enum AIAnalyzer {
         // 不用 CIBulgeDistortion —— macOS 27 上 distortion 家族(CIBulge/Twirl/Pinch/CircleSplash)
         // 最小复现全部 extent=0/Abort,同批回归。自写 CPU 径向映射,与瘦脸 warp 同源技术。
         // 轻度(≤0.22)宁可欠修不可过修 —— 盲校正过修会把直门框修弯
-        if analysis.fisheyeHint > 0.45 {
+        if enabled.contains(.distortion), analysis.fisheyeHint > 0.45 {
             let k1 = -0.22 * min(analysis.fisheyeHint, 1.0)
             if let fixed = radialDistortionCorrect(out, k1: k1) {
                 out = fixed
@@ -315,14 +338,14 @@ enum AIAnalyzer {
             }
         }
 
-        if analysis.blurScore < 40 {
+        if enabled.contains(.sharpen), analysis.blurScore < 40 {
             // 锐化 + 微反差,拉克普拉斯方差
             out = out.applyingFilter("CISharpenLuminance", parameters: [
                 kCIInputRadiusKey: 6, "inputSharpness": 0.7,
             ])
             .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("AI补锐")
-        } else if analysis.blurScore < 55 {
+        } else if enabled.contains(.sharpen), analysis.blurScore < 55 {
             out = out.applyingFilter("CISharpenLuminance", parameters: [
                 kCIInputRadiusKey: 4, "inputSharpness": 0.4,
             ])
@@ -336,7 +359,7 @@ enum AIAnalyzer {
 
         // 人像美颜修正:人脸在场 → 磨皮+肤色掩膜美白(质感层兜底)
         // 双重涂抹防线:用户滑杆显式开磨皮(≥0.2)时跳过
-        if analysis.faceCount > 0 && userSmoothing < 0.2 {
+        if enabled.contains(.facePolish), analysis.faceCount > 0 && userSmoothing < 0.2 {
             let skin = out.applyingFilter("CIColorMatrix", parameters: [
                 "inputRVector": CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0),
                 "inputGVector": CIVector(x: -0.168736, y: -0.331264, z: 0.5, w: 0.5),
@@ -367,7 +390,7 @@ enum AIAnalyzer {
         let finalCast = colorCast(cgOfOrEmpty(out))
         // 除数 120(主链 220 的收紧版):终末残差要求一次收敛到 |cast|<8,不再迭代
         let finalGain = min(0.30, abs(finalCast) / 120.0)
-        if finalGain > 0 && abs(finalCast) >= 8 {
+        if enabled.contains(.whiteBalance), finalGain > 0 && abs(finalCast) >= 8 {
             let rr = finalCast > 0 ? 1.0 - finalGain : 1.0 + finalGain
             let bb = finalCast > 0 ? 1.0 + finalGain : 1.0 - finalGain
             out = out.applyingFilter("CIColorMatrix", parameters: [

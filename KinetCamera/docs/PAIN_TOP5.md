@@ -7,7 +7,7 @@
 | 1 | **照片歪斜** —— 拍文档/地平线斜,后期还要转正裁一遍 | ✅ 已闭环(09-26 深夜重写几何链) | AIAnalyzer(VNDetectHorizonRequest+中心旋转+CIToneCurve替代contrast) | 6.5°歪图→蓝线金标准 0.00° 转正,黑边0%,直方图黑峰零丢失(详见下节A/B) |
 | 2 | **暗光拍照一片黑+噪点爆炸** | ✅ 已闭环 | AIAnalyzer 暗光判定(bias<-0.45)+ FilterPipeline 暗光增强档(EV+1.3+Gamma0.78+降噪+终末二次WB) | lum 68.3→99+,cast 全档收敛\|<9\| |
 | 3 | **录完视频才发现没声音** —— 系统相机静音录完才傻眼 | ✅ 已闭环 | CameraManager.writeAudioSample(逐块PCM峰值)+ ContentView(speaker.slash告警)+ 落盘 audio.json 打标 | 全零音轨环境端到端:实时告警触发+{audioSilent:true,audioPeakDB:-200}(video_audio.json) |
-| 4 | **自拍脸变形+肤色差** —— 广角畸变+暗黄+毛孔,发出去前要修图 | ✅ 已闭环(真人样张待拍) | FilterPipeline 三档(磨皮0.7压噪78.6%/美白0.6肤区+6去黄/瘦脸0.8下颌-5~-17px)+ radialDistortionCorrect 畸变校正 | beauty3_ab.png + 畸变残差98.34→19.13;本日录像美颜烧入实测 99.8% 像素差异(video_beauty_ab.png) |
+| 4 | **自拍脸变形+肤色差** —— 广角畸变+暗黄+毛孔,发出去前要修图 | 🟡 两档新数据已闭环/瘦脸待真人样张 | FilterPipeline 磨皮(GF+软阈值回注)/美白(CPU肤色掩膜,双重美白bug已修)+radialDistortionCorrect | **现行有效**(09-26深夜二轮,当前HEAD重跑):磨皮0.7压噪69.2%(9.83→3.03)/美白0.6肤区R-B 73.9→67.6去黄+背景零污染(Δ-0.5,双重美白bug修复后)/畸变弯折11.3→7.0px(质心追踪,金标准6.0)。证据:beauty3_ab_v2.png+fisheye_ab_v2.png+beauty3_report_v2.json。旧数据(78.6%/+6.0/-5~-17px)已作废(样张丢失+管线变更)。瘦脸档需真人脸(Vision合成脸检不出)待补测 |
 | 5 | **广角自拍边缘拉伸/鼓出** | ✅ 已闭环 | AIAnalyzer fisheyeHint(人脸贴边+宽高比)+ FilterPipeline radialDistortionCorrect(CPU径向位移场) | 数学闭环:预桶形98.34→校正19.13(压回80.5%) |
 
 ## 全链路验证(合成输入源,09-26 晚)

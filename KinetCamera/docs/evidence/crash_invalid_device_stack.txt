@@ -1,0 +1,24 @@
+# KinetCamera 崩溃现场:断连设备 AVCaptureDeviceInput NSException(2026-09-26 20:16:16)
+
+## 复现路径(自动化实测)
+1. iPhone 连续互通上线,active=内置摄
+2. 录制中切 iPhone → 内置摄(iPhone 断连流程进行中)
+3. rebuildSessionLocked() 对已失效设备调 AVCaptureDeviceInput(device:)
+4. **AVCaptureDeviceInput init 抛 NSException 'Device is not a valid input device'(ObjC 异常,Swift try? 捕不住)**
+5. app 终止:EXC_CRASH SIGABRT(官方 .ips:KinetCamera-2026-09-26-201616.ips)
+
+## stderr 捕获的异常消息(崩溃瞬间)
+*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+reason: '*** -[AVCaptureDeviceInput initWithDevice:error:] Device is not a valid input device'
+崩溃栈首帧: KinetCamera CameraManager.rebuildSessionLocked() (示意帧:rebuildAndRun)
+
+## .ips 佐证(官方符号化节选)
+- termination: Abort trap: 6(libsystem_c: abort() called)
+- 崩溃线程栈含 CoreMediaIO: CMIODeviceStopStream —— 正是设备流停止(断连)窗口
+- 时间戳 20:16:16 与 /switch 复现时刻(20:16:14)间隔 2s,同一事件链
+
+## 修复(ef98322 本体 + 后续补丁)
+- rebuildSessionLocked / addMicLocked / PIP rig 创建 三处增加 device.isConnected 预检
+- AVCaptureDeviceInput init 包 do-catch(Swift Error 通路)+ isConnected 预检挡 NSException 通路
+- 教训:**macOS 上 AVCaptureDeviceInput(device:) 在设备失效时抛 NSException 不是 Swift Error,
+  try? 形同虚设;必须事前 isConnected 校验(竞态窗口:iPhone 断连流程中设备仍在 devices 列表)**

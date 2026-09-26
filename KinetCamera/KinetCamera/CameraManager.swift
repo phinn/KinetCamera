@@ -20,6 +20,23 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - Published 状态(全部只在主线程改)
     @Published var devices: [AVCaptureDevice] = []
+
+    /// 镜头位候选(按等效焦距排:超广角0.5x→广角1x→长焦5x),iOS 三摄位快捷切换用。
+    /// 同机位多设备(如前置 TrueDepth+前置广角)取第一个;macOS 返回空(无位概念)。
+    var lensCandidates: [(device: AVCaptureDevice, label: String)] {
+        #if os(iOS)
+        let ultra = devices.filter { $0.deviceType == .builtInUltraWideCamera }
+        let wide  = devices.filter { $0.deviceType == .builtInWideAngleCamera && $0.position == .back }
+        let tele  = devices.filter { $0.deviceType == .builtInTelephotoCamera }
+        var out: [(AVCaptureDevice, String)] = []
+        if let d = ultra.first { out.append((d, "0.5×")) }
+        if let d = wide.first { out.append((d, "1×")) }
+        if let d = tele.first { out.append((d, "5×")) }
+        return out
+        #else
+        return []
+        #endif
+    }
     @Published var activeDeviceID: String?
     @Published var isSessionRunning = false
     @Published var isRecording = false

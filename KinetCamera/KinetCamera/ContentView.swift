@@ -562,6 +562,23 @@ struct SidePanelView: View {
                             Text(vm.zoomIsHardware ? "硬件变焦" : "软件裁切")
                                 .font(.caption2).foregroundColor(.secondary)
                         }
+                        // 镜头位快切(iOS 三摄位:0.5×/1×/5× 硬件镜头,非数码裁切)
+                        #if os(iOS)
+                        if !vm.manager.lensCandidates.isEmpty {
+                            HStack {
+                                Text("镜头位").font(.caption).frame(width: 56, alignment: .leading)
+                                ForEach(vm.manager.lensCandidates, id: \.device.uniqueID) { cand in
+                                    Button(cand.label) {
+                                        vm.manager.switchDevice(to: cand.device.uniqueID)
+                                    }
+                                    .font(.caption.monospacedDigit())
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(vm.manager.activeDeviceID == cand.device.uniqueID ? .accentColor : .gray)
+                                }
+                                Spacer()
+                            }
+                        }
+                        #endif
                         Toggle("三分线网格", isOn: $vm.showGrid)
                             .font(.caption)
                     }

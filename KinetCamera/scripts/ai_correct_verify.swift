@@ -30,7 +30,7 @@ struct WBVerify {
         } else if force == "dark2" {
             input = input.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -2.2])  // 严重暗光→暗光档
         } else if force == "tilt6" {
-            input = input.applyingFilter("CIStraightenFilter", parameters: ["inputAngle": CGFloat(6.0 * .pi / 180)])
+            input = input.transformed(by: CGAffineTransform(rotationAngle: CGFloat(-6.0 * .pi / 180)))  // 模拟顺时针拍歪(Vision 将读+6)
         }
         let inCG0 = ctx.createCGImage(input, from: input.extent)!
 
@@ -66,6 +66,17 @@ struct WBVerify {
         if force == "tilt6" { analysis.tiltAngle = 6.0 }        // 注入:预倾斜的图中 Vision horizon 可能测不出精确值
         if force == "fisheye" { analysis.fisheyeHint = 0.9 }    // 注入:已知畸变场景
         let corrected = AIAnalyzer.autoCorrect(input, analysis: analysis, userSmoothing: 0)
+        // DEBUG: extent 与独立 straighten 对照
+        if force == "tilt6" {
+            let stOnly = input.applyingFilter("CIStraightenFilter", parameters: ["inputAngle": CGFloat(6.0 * .pi / 180)])
+            if let ocg = ctx.createCGImage(stOnly, from: stOnly.extent) {
+                let url = URL(fileURLWithPath: "/tmp/st_only.png") as CFURL
+                if let dest = CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(dest, ocg, nil); CGImageDestinationFinalize(dest)
+                }
+            }
+            FileHandle.standardError.write("DEBUG input.extent=\(input.extent) corrected.extent=\(corrected.image.extent)\n".data(using: .utf8)!)
+        }
         let outCG = cgOf(corrected.image)
         let after = stats(outCG)
 

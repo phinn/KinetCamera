@@ -239,16 +239,16 @@ enum AIAnalyzer {
             out = out.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.78])   // 抬暗部少压高光
             out = out.applyingFilter("CINoiseReduction", parameters: ["inputNoiseLevel": 0.06, "inputSharpness": 0.6])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.3])
-            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.08])
-            applied.append("暗光增强(亮度+降噪+对比)")  // 提亮放大的色偏由链尾终末二次WB统一收敛
+            .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
+            applied.append("暗光增强(亮度+降噪+对比)")  // 对比微调用gamma替代。坑:CIColorControls contrast线性域暗部clamp纯黑(黑格62→0)/CIToneCurve mac27全黑,双弃  // 提亮放大的色偏由链尾终末二次WB统一收敛
         } else if analysis.exposureBias < -0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.8])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.25])
-            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.06])
+            .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("提亮+0.8EV")
         } else if analysis.exposureBias > 0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.55])
-            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.1])
+            .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("压高光-0.55EV")
         } else if analysis.exposureBias < -0.08 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.35])
@@ -270,14 +270,36 @@ enum AIAnalyzer {
             applied.append(analysis.colorCast > 0 ? "AI去暖(\(Int(analysis.colorCast)))" : "AI去冷(\(Int(analysis.colorCast)))")
         }
 
-        // 水平校正:Vision horizon 检测的倾角,|θ|>1.2° 用 CIStraightenFilter 转正。
+        // 水平校正:Vision horizon 检测的倾角,|θ|>1.2° 转正。
         // 放在曝光/白平衡之后、锐化之前:几何变换会重采样,先锐化会被插值糊掉
+        // 坑1(macOS 27 实测):CIStraightenFilter 旋转角不可靠 —— 对 level 图 inputAngle=+6°
+        //   实际画面转出 -11.4°(蓝线金标准测量,内部内接矩形适配干扰),用它转正反而加倍歪。
+        // 坑2:CIStraightenFilter 不重置 extent 原点,链上前置 filter 平移过 extent 时
+        //   再按 extent*0.94 内缩 crop 会把裁窗错位到画面外(黑边)。
+        // 修法:弃用 CIStraightenFilter,显式 CGAffineTransform(rotationAngle) 旋转 +
+        //   extent 归零 + 中心 94% 裁切。CGAffineTransform 行为已用蓝线几何验证:
+        //   Vision 读 +6.5° 的图,rotationAngle=+6.5° 精确转正(0.00°),同号修正。
         if abs(analysis.tiltAngle) > 1.2 {
-            out = out.applyingFilter("CIStraightenFilter", parameters: [
-                "inputAngle": CGFloat(analysis.tiltAngle * .pi / 180),
-            ]).cropped(to: out.extent.applying(
-                CGAffineTransform(scaleX: 0.94, y: 0.94)
-                    .translatedBy(x: out.extent.width * 0.03, y: out.extent.height * 0.03)))
+            let theta = CGFloat(analysis.tiltAngle * .pi / 180)
+            // 绕图像中心旋转(标准做法):先平移中心到原点 → 旋转 → 平移回。
+            // 坑:直接 transformed(rotationAngle) 是绕原点转,内容会甩出 extent;再归零 extent 时
+            // 内容中心与 extent 中心不对齐,内接 crop 仍会裁进透明区(PNG 出对角黑三角)。
+            let ext = out.extent
+            let cx = ext.midX, cy = ext.midY
+            var t = CGAffineTransform(translationX: -cx, y: -cy)
+            t = t.rotated(by: theta)
+            t = t.translatedBy(x: cx, y: cy)
+            let rotated = out.transformed(by: t)
+            // 无黑边内接矩形(绕中心旋转,内容中心=extent中心):
+            // safe_w = W·cosθ - H·sinθ, safe_h = H·cosθ - W·sinθ
+            let W = ext.width, H = ext.height
+            let c = abs(cos(theta)), s = abs(sin(theta))
+            let sw = max(W * c - H * s, W * 0.5), sh = max(H * c - W * s, H * 0.5)
+            let cropRect = CGRect(x: rotated.extent.midX - sw / 2, y: rotated.extent.midY - sh / 2,
+                                  width: sw, height: sh).integral
+            out = rotated
+                .cropped(to: cropRect)
+                .transformed(by: CGAffineTransform(translationX: -cropRect.minX, y: -cropRect.minY))
             applied.append("水平校正(\(Int(analysis.tiltAngle.rounded()))°)")
         }
 
@@ -298,7 +320,7 @@ enum AIAnalyzer {
             out = out.applyingFilter("CISharpenLuminance", parameters: [
                 kCIInputRadiusKey: 6, "inputSharpness": 0.7,
             ])
-            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.05])
+            .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.96])
             applied.append("AI补锐")
         } else if analysis.blurScore < 55 {
             out = out.applyingFilter("CISharpenLuminance", parameters: [

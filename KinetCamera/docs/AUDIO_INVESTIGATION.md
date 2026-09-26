@@ -45,3 +45,40 @@ xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift && /t
 - 录像音频 format:outputSettings 从硬编码 44.1k/2ch 改为运行时读
   `CMAudioFormatDescription`(内置麦实际 48k/1ch),消除 AVAssetWriter -16364 第二嫌疑人
 - `post_reboot_verify.sh` aq_probe 编译参数补 `-parse-as-library`(main attribute 与顶层代码冲突)
+
+## 追加取证(09-26 晚,用户定性"没声=bug"后深挖)
+
+### 新增排除项
+
+- ❌ TCC 授权:`AVCaptureDevice.authorizationStatus(for: .audio)` = **3 authorized**
+- ❌ 默认设备错位:默认输入 = 内置麦 dev100(48k/1ch,格式查询正常)
+- ❌ 设备枚举异常:全系统仅 3 个输入源(内置麦 BuiltIn / Teams / Oray 均 Virtual),无劫持
+
+### VPIO 语音处理单元直采(scripts/vpio_probe.swift,层10)
+
+```
+VoiceProcessingIO 单元:cb/init/start 全 0,render 回调 5s 收 220148 帧
+frames=220148 peak=0.0000 dB=-200.0 renderErr=0
+```
+
+**Apple 自家语音 DSP 单元也只拿到全零** → 数据在 ExclaveDSP(音频协处理器)/内核
+音频驱动层就被替换为零,所有用户态采集栈(AQ/HAL/AVF/ffmpeg/VPIO)共享同一上游。
+
+### 确认出声的两条路径(按优先级)
+
+1. **重启 Mac**(用户态零操作):清 ExclaveDSP/Oray 驱动在 coreaudiod 的僵尸状态。
+   重启后一键复验:`bash scripts/post_reboot_verify.sh`
+2. **不重启,终端执行(root)**:重启音频守护进程
+   ```bash
+   sudo launchctl kickstart -k system/com.apple.audio.coreaudiod
+   # 可选:卸载可疑虚拟声卡驱动后重启守护
+   # sudo kextunload -b com.oray....; sudo launchctl kickstart -k system/com.apple.audio.coreaudiod
+   ```
+   然后复验:`xcrun swiftc -O -parse-as-library -o /tmp/vpio scripts/vpio_probe.swift
+   -framework AudioUnit -framework CoreAudio -framework Foundation && /tmp/vpio`
+   peak 非 0.0000 = 修复完成,录像立即有真声(录像链 aac 写入一直是好的,零是上游数据)。
+
+### 两条都失败的定级
+
+ExclaveDSP 音频协处理器固件级故障 → Apple Store 硬件诊断(app 无任何可修点,
+四层+VPIO 五路取证已穷尽用户态所有手段)。

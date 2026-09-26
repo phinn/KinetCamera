@@ -97,3 +97,31 @@
 夜景/防抖/HDR 合成回归修复:合成源移动 band(2px/帧)在时域平均运动检测(±2px 搜索窗,SAD 采样
 4px 网格)下单帧 SAD 12-17 万,7/8 帧被误弃"运动过猛"。band 改静止,三链路实测全通:
 夜景(8帧平均+增益x1.9, cast 48.7→-14) / 防抖(残差 0.006 vs 未对齐 0.007) / HDR(kept8 弃0, exp→94.7)
+
+## 美颜三档/多摄/音频VPIO 补充实测(09-26 晚)
+
+### 美颜三档(与 app 同源 harness beauty3_run,样张双人脸 Vision 检测通过)
+
+| 档位 | 量化指标 | 判定 |
+|---|---|---|
+| 磨皮 0.7 | 皮肤高频能量 4.15→0.89,压噪 78.6%,亮度偏移 +2.6 | ✓ |
+| 美白 0.6 | 肤区亮度 166→172(+6.0),暖度 R-B 76→63.6 去黄 | ✓ |
+| 瘦脸 0.8 | 下颌宽度渐进收窄:60%行 -5px / 75% -11px / 90% -17px | ✓ |
+| 三合一 | 压噪 78.2% + 肤区提亮 5.1 | ✓ |
+
+瘦脸为新实现:Vision 人脸框 + CPU 位移场双线性 warp(CIWarpKernel 在 macOS 27
+apply 恒 NIL,最小复现三种 roi/参数全 NIL)。证据:beauty3_ab.png + beauty3_report.json
+
+### 多摄并发(本机 1 物理摄 + 屏流伪设备;iPhone 连续互通插线即扩容)
+
+- 双源并发 5s 采样:主摄 +153 帧(30fps 1080p)+ 屏流 +75 帧(15fps 540p)
+- 8s 并发录像:h264 720p30 + aac,PIP 右上烧入(方差 73 vs 背景 38-70)
+- /switch 切换链路通(session 重建,帧流恢复);录像中锁定防 preset 错配
+- 证据:MULTICAM_EVIDENCE.md + dual_source_pip_frame100.png
+
+### 音频 -91dB 第五层取证(VPIO)
+
+VoiceProcessingIO(Apple 语音 DSP)5s render 220148 帧 renderErr=0 但 peak=0.0000
+—— 五路用户态栈(AQ/HAL/AVF/ffmpeg/VPIO)全零,锁死 ExclaveDSP/内核音频驱动层。
+出声路径:①重启 Mac;②`sudo launchctl kickstart -k system/com.apple.audio.coreaudiod`。
+复验:post_reboot_verify.sh(已升级 VPIO+AQ 双 probe)。

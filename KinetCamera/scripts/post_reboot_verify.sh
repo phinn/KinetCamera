@@ -9,10 +9,17 @@ bad()  { echo "❌ $1"; FAIL=$((FAIL+1)); }
 
 echo "=== ① 音频一锤定音(aq_probe 声学闭环) ==="
 echo ">>> 请对 Mac 说话或敲桌子(5 秒采样窗口)"
-xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift 2>/dev/null || xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift -framework CoreAudio -framework CoreFoundation 2>/dev/null
-AQ_OUT=$(/tmp/aq_verify 2>&1 | tail -5)
-echo "$AQ_OUT"
-echo "$AQ_OUT" | grep -qE "peak=0\.0*[1-9]" && ok "音频采集出数(硬件层已恢复)" || bad "音频仍全零 → 定级 Exclave DSP/硬件,走 Apple Store 硬件诊断"
+xcrun swiftc -O -parse-as-library -o /tmp/vpio_verify scripts/vpio_probe.swift -framework AudioUnit -framework CoreAudio -framework Foundation 2>/dev/null
+VPIO_OUT=$(/tmp/vpio_verify 2>&1 | tail -2)
+echo "[VPIO] $VPIO_OUT"
+if echo "$VPIO_OUT" | grep -qE "peak=0\.0*[1-9]"; then
+    ok "音频采集出数·VPIO路(硬件层已恢复,录像有真声)"
+else
+    xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift 2>/dev/null || xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift -framework CoreAudio -framework CoreFoundation 2>/dev/null
+    AQ_OUT=$(/tmp/aq_verify 2>&1 | tail -2)
+    echo "[AQ]   $AQ_OUT"
+    echo "$AQ_OUT" | grep -qE "peak=0\.0*[1-9]" && ok "音频采集出数·AQ路(硬件层已恢复)" || bad "VPIO+AQ 双路仍全零 → sudo launchctl kickstart -k system/com.apple.audio.coreaudiod 后重跑;仍零=ExclaveDSP固件级,走Apple硬件诊断"
+fi
 
 echo ""
 echo "=== ② TCC 本名验证(KinetCamera 非 Terminal 代持) ==="

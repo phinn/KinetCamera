@@ -468,9 +468,34 @@ final class CameraViewModel: ObservableObject {
     // MARK: - 变焦(硬件优先,软件兜底,互斥路由)
     /// UI/自动化统一入口。硬件档直接动 device.videoZoomFactor;
     /// 合成源/屏流/无硬件 zoom 设备走滤镜链中心裁切,预览录像拍照所见即所得。
-    func setZoom(_ factor: Double) {
-        manager.setZoom(factor)
-        // 软件档由 manager 回调 onSoftwareZoom 写 settings(挂桥在 init)
+    /// 档位跳变痛点:1x→4x 硬切画面猛跳。此处对目标倍率做缓动逼近(≈24帧过渡),
+    /// 预览每帧收到平滑递增的 softwareZoom,人眼无跳变;硬件档(iOS)由系统动画,不经此路径。
+    private var zoomAnimTimer: Timer?
+    func setZoom(_ factor: Double, animated: Bool = true) {
+        zoomAnimTimer?.invalidate()
+        let from = manager.zoomFactor
+        let clamped = min(max(factor, 1.0), 8.0)
+        guard animated, abs(clamped - from) > 0.01 else {
+            manager.setZoom(clamped)
+            return
+        }
+        // easeOutCubic 逼近:前快后慢,体感跟手
+        let steps = 24
+        var i = 0
+        zoomAnimTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            i += 1
+            let p = Double(i) / Double(steps)
+            let eased = 1 - pow(1 - p, 3)
+            let v = from + (clamped - from) * eased
+            if i >= steps {
+                t.invalidate()
+                self.zoomAnimTimer = nil
+                self.manager.setZoom(clamped)
+            } else {
+                self.manager.setZoom(v)
+            }
+        }
     }
     var zoom: Double { manager.zoomFactor }
     var zoomIsHardware: Bool { manager.zoomIsHardware }

@@ -5,7 +5,8 @@ import Accelerate
 // MARK: - AI 体检结果
 struct AIAnalysis: Equatable {
     var blurScore: Double = 0       // 0(糊)-100(锐)
-    var exposureScore: Double = 0   // 0(欠曝)-100(过曝),50 为佳
+    var exposureScore: Double = 0   // 曝光质量分:0(烂)-100(理想),高分=好。方向判断用 exposureBias
+    var exposureBias: Double = 0    // 曝光偏移:-1(严重欠)..0(理想)..+1(严重过)
     var faceCount: Int = 0
     var compositionHint: String? = nil
     var suggestion: String? = nil   // 一句话建议
@@ -37,6 +38,7 @@ enum AIAnalyzer {
 
         result.blurScore = sharpnessScore(cgImage: cg)
         result.exposureScore = exposureScore(cgImage: cg)
+        result.exposureBias = exposureBias(cgImage: cg)
         result.colorCast = colorCast(cg)
 
         // 人脸(用于构图建议)
@@ -108,11 +110,13 @@ enum AIAnalyzer {
     /// |cast| < 8 不动(噪声容差);8-20 轻度纠正;20-40 标准;>40 强纠正但封顶 0.35
     /// (强色偏往往混着光源光谱缺失,纠过头出灰尸脸,封顶留给用户手动调)
     static func whiteBalanceGain(forColorCast cast: Double) -> Double {
+        // 连续比例式:cast 是 R-B 均值差(0-255 域),目标把 R/B 拉到公共均值。
+        // 旧分档(0.18/0.35/0.5)对强暖图过校翻转到偏冷(none 档实测 22.8→-26.7),
+        // 连续式 gain=|cast|/2/(meanR+meanB) 近似 —— 简化为 |cast|/300,上下限钳制。
         let abs_cast = abs(cast)
-        if abs_cast < 8 { return 0 }
-        if abs_cast < 20 { return 0.18 }
-        if abs_cast < 40 { return 0.35 }
-        return 0.5
+        if abs_cast < 6 { return 0 }
+        // 强暖图实测:比例式 55.8 cast 只修到 36.7(美白层抬 R 部分抵消),除数收紧到 220
+        return min(0.30, abs_cast / 220.0)
     }
 
     /// 拉普拉斯方差(经典清晰度指标,归一化到 0-100)
@@ -151,7 +155,25 @@ enum AIAnalyzer {
 
     /// 亮度直方图(均值+高光占比),映射到 0-100,50 为理想曝光
     static func exposureScore(cgImage: CGImage) -> Double {
-        guard let gray = toGray(cgImage) else { return 50 }
+        let (mean, clipRatio, _) = exposureStats(cgImage: cgImage)
+
+        // 均值理想区间 100-160;越偏越扣分;削波额外惩罚
+        let ideal: Double = 130
+        let dev = abs(mean - ideal) / 130.0            // 0..1
+        var score = 100.0 - dev * 90.0 - clipRatio * 120.0
+        score = min(max(score, 0), 100)
+        return score
+    }
+
+    /// 曝光偏移估计:-1(严重欠)..0(理想)..+1(严重过),驱动 autoCorrect 方向。
+    /// 与 exposureScore(质量分)严格分离 —— 质量分高低 ≠ 过/欠曝方向,
+    /// 旧代码拿质量分 >78 当"过曝"是方向性 bug(高分恰恰是接近理想)。
+    static func exposureBias(cgImage: CGImage) -> Double {
+        exposureStats(cgImage: cgImage).bias
+    }
+
+    private static func exposureStats(cgImage: CGImage) -> (mean: Double, clipRatio: Double, bias: Double) {
+        guard let gray = toGray(cgImage) else { return (130, 0, 0) }
         var hist = [Int](repeating: 0, count: 256)
         for p in gray.pixels {
             hist[min(Int(p * 255), 255)] += 1
@@ -167,13 +189,11 @@ enum AIAnalyzer {
         }
         let mean = sum / Double(total)                 // 0-255
         let clipRatio = Double(clippedHigh + clippedLow) / Double(total)
-
-        // 均值理想区间 100-160;越偏越扣分;削波额外惩罚
+        // bias:均值偏移为主,削波方向加权(高光削波→偏亮,暗部削波→偏暗)
         let ideal: Double = 130
-        let dev = abs(mean - ideal) / 130.0            // 0..1
-        var score = 100.0 - dev * 90.0 - clipRatio * 120.0
-        score = min(max(score, 0), 100)
-        return score
+        var bias = (mean - ideal) / ideal
+        bias += Double(clippedHigh - clippedLow) / Double(total) * 0.5
+        return (mean, clipRatio, min(max(bias, -1), 1))
     }
 
     // CGImage -> 灰度 Float 数组(最大 512 边,内部走 RGBA 转灰度)
@@ -191,16 +211,18 @@ enum AIAnalyzer {
         var out = image
         var applied: [String] = []
 
-        if analysis.exposureScore < 35 {
+        // 方向判断用 exposureBias(过/欠曝方向),不再用质量分 —— 旧代码 quality>78 被当
+        // "过曝"压光是方向性 bug:高分恰恰是接近理想,导致白背景正常照片被反向压光/提亮。
+        if analysis.exposureBias < -0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.8])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.25])
             out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.06])
             applied.append("提亮+0.8EV")
-        } else if analysis.exposureScore > 78 {
+        } else if analysis.exposureBias > 0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.55])
             out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.1])
             applied.append("压高光-0.55EV")
-        } else if analysis.exposureScore < 42 {
+        } else if analysis.exposureBias < -0.08 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.35])
             applied.append("轻提亮+0.35EV")
         }
@@ -234,12 +256,10 @@ enum AIAnalyzer {
             applied.append("轻补锐")
         }
 
-        if analysis.faceCount > 0 && analysis.exposureScore >= 35 && analysis.exposureScore <= 78 {
-            out = out.applyingFilter("CITemperatureAndTint", parameters: [
-                "inputNeutral": CIVector(x: 6500, y: 6500),
-            ])
-            applied.append("人像色温中性化")
-        }
+        // 人像色温中性化分支已删除(2026-09-26 harness 铁证):
+        // macOS 27 上 CITemperatureAndTint 连 neutral=6500 标准域也输出全黑(lum 183→0),
+        // 之前只发现 neutral>1.2万全黑,实际是"任意域随机全黑",不可信。
+        // 色温修正已由上方 CIColorMatrix WB gain 分级覆盖,此分支冗余且危险。
 
         // 人像美颜修正:人脸在场 → 磨皮+肤色掩膜美白(质感层兜底)
         // 双重涂抹防线:用户滑杆显式开磨皮(≥0.2)时跳过
@@ -271,10 +291,10 @@ enum AIAnalyzer {
         return (out, applied)
     }
 
-    /// 修正效果量化:对修正后图重打分(含色偏复测)
-    static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double, colorCast: Double) {
-        guard let cg = context.createCGImage(image, from: image.extent) else { return (0, 50, 0) }
-        return (sharpnessScore(cgImage: cg), exposureScore(cgImage: cg), colorCast(cg))
+    /// 修正效果量化:对修正后图重打分(含色偏复测+曝光偏移)
+    static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double, colorCast: Double, bias: Double) {
+        guard let cg = context.createCGImage(image, from: image.extent) else { return (0, 50, 0, 0) }
+        return (sharpnessScore(cgImage: cg), exposureScore(cgImage: cg), colorCast(cg), exposureBias(cgImage: cg))
     }
 
     /// 亮度均值(CIAreaAverage,AE 闭环用,微秒级)

@@ -73,12 +73,14 @@ final class DevicePolicyTests: XCTestCase {
 final class AICorrectionTests: XCTestCase {
 
     func testWhiteBalanceGainLadder() {
+        // 2026-09-26 改连续比例式(旧分档 0.18/0.35/0.5 对强暖图过校翻转偏冷,harness 实测 22.8→-26.7):
+        // gain = min(0.30, |cast|/220),<6 视为噪声不动
         XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 0), 0)       // 噪声内不动
         XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 5), 0)
-        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 12), 0.18)   // 轻度
-        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: -25), 0.35)  // 标准(冷偏同档)
-        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 60), 0.5)    // 强偏封顶
-        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: -100), 0.5)
+        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 12), 12.0/220.0, accuracy: 1e-9)   // 轻度
+        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: -25), 25.0/220.0, accuracy: 1e-9)  // 标准(冷偏同式)
+        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: 60), 60.0/220.0, accuracy: 1e-9)   // 比例区
+        XCTAssertEqual(AIAnalyzer.whiteBalanceGain(forColorCast: -100), 0.30)  // 封顶 0.30
     }
 
     func testColorCastSymmetry() {

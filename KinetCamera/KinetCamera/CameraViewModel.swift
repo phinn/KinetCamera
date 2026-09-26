@@ -122,7 +122,7 @@ final class CameraViewModel: ObservableObject {
             var best: (index: Int, score: Double, image: CIImage)?
             for (i, f) in frames.enumerated() where i % 2 == 0 {
                 let a = AIAnalyzer.analyze(f.image, context: ctx)
-                let score = a.blurScore - abs(a.exposureScore - 50) * 0.5
+                let score = a.blurScore * 0.6 + a.exposureScore * 0.4  // 质量分越高越好
                 if best == nil || score > best!.score { best = (i, score, f.image) }
             }
             guard let pick = best else {
@@ -162,7 +162,7 @@ final class CameraViewModel: ObservableObject {
 
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
         // 美颜纳入修正链:人脸在场即触发质感兜底(用户显式开磨皮时 AIAnalyzer 内自动跳过防双重涂抹)
-        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || analysis.faceCount > 0 || abs(analysis.colorCast) >= 8 {
+        if analysis.blurScore < 55 || analysis.faceCount > 0 || abs(analysis.colorCast) >= 8 || abs(analysis.exposureBias) > 0.18 {
             let corrected = AIAnalyzer.autoCorrect(raw, analysis: analysis, userSmoothing: beauty.smoothing)
             finalImage = corrected.image
             applied += corrected.appliedNames   // 追加不覆盖:保留前面的 PIP同框 标记
@@ -176,14 +176,14 @@ final class CameraViewModel: ObservableObject {
         let url = CameraManager.savePNG(image: finalImage)
 
         // 修正效果复打分(before/after 同帧硬证据,写进伴生 JSON;含色偏复测)
-        let after = AIAnalyzer.rescore(finalImage, context: ctx)
+        let after = AIAnalyzer.rescore(finalImage, context: ctx)  // (blur, exposure, colorCast, bias)
         let report = CaptureReport(
             beforeBlur: (analysis.blurScore * 10).rounded() / 10,
             beforeExposure: (analysis.exposureScore * 10).rounded() / 10,
             afterBlur: (after.blur * 10).rounded() / 10,
             afterExposure: (after.exposure * 10).rounded() / 10,
             applied: applied,
-            improved: after.blur >= analysis.blurScore && abs(after.exposure - 50) <= abs(analysis.exposureScore - 50),
+            improved: after.blur >= analysis.blurScore && abs(after.bias) <= abs(analysis.exposureBias),
             faceCount: analysis.faceCount,
             beforeColorCast: (analysis.colorCast * 10).rounded() / 10,
             afterColorCast: (after.colorCast * 10).rounded() / 10)
@@ -291,7 +291,7 @@ final class CameraViewModel: ObservableObject {
             ? ["\(cgs.count)帧时域平均", "运动补偿对齐", "夜景增益x\(mode.gain)"]
             : ["\(cgs.count)帧对齐平均", "搜索窗±\(mode.maxShift)px", "对齐残差\(String(format: "%.3f", comp.residual))→未对齐\(String(format: "%.3f", comp.naiveResidual))"]
         if comp.dropped > 0 { applied.append("弃运动帧\(comp.dropped)") }
-        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || abs(analysis.colorCast) >= 8 {
+        if analysis.blurScore < 55 || abs(analysis.colorCast) >= 8 || abs(analysis.exposureBias) > 0.18 {
             let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)
             final = fixed
             applied += fixes
@@ -304,7 +304,7 @@ final class CameraViewModel: ObservableObject {
             afterBlur: (after.blur * 10).rounded() / 10,
             afterExposure: (after.exposure * 10).rounded() / 10,
             applied: applied,
-            improved: after.exposure > analysis.exposureScore || abs(after.exposure - 50) < abs(analysis.exposureScore - 50),
+            improved: after.exposure > analysis.exposureScore || abs(after.bias) < abs(analysis.exposureBias),
             faceCount: analysis.faceCount,
             beforeColorCast: (analysis.colorCast * 10).rounded() / 10,
             afterColorCast: (after.colorCast * 10).rounded() / 10)

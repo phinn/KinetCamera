@@ -24,8 +24,14 @@ final class AutomationServer {
         guard listener == nil else { return }
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
+        #if os(iOS)
+        // iOS 真机验收:绑通配接口(同 Wi-Fi 的 Mac 可驱动实录/三摄切换);LocalNetwork 权限由 Info.plist 声明
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(
+            host: "0.0.0.0", port: NWEndpoint.Port(rawValue: port)!)
+        #else
         params.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+        #endif
         guard let l = try? NWListener(using: params) else {
             NSLog("[KinetAutomation] listener create failed")
             return
@@ -293,6 +299,7 @@ final class AutomationServer {
                 "recordingSeconds": (m.recordingSeconds * 10).rounded() / 10,
                 "pipDeviceIDs": m.pipDeviceIDs,
                 "pipFrameCount": vm.pipFrames.count,
+                "pipFrameTotal": vm.pipFrameTotal,
                 "screenFrameCount": m.screenFrameCount,
                 "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,

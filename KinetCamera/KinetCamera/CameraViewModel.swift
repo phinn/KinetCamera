@@ -48,12 +48,14 @@ final class CameraViewModel: ObservableObject {
         manager.onPIPFrame = { [weak self] id, image in
             DispatchQueue.main.async {
                 self?.pipFrames[id] = image
+                self?.pipFrameTotal += 1
             }
         }
         // 屏流伪设备帧回流 PIP 字典(与摄像头 PIP 同一条成片合成路径)
         manager.screenSource.onFrame = { [weak self] id, image in
             DispatchQueue.main.async {
                 self?.pipFrames[id] = image
+                self?.pipFrameTotal += 1
             }
         }
         // manager 的状态变化透传给观察 vm 的视图
@@ -84,6 +86,8 @@ final class CameraViewModel: ObservableObject {
     }
 
     /// 画中画当前帧(设备ID → 帧)
+    /// PIP 帧总数(含屏流,真实帧计数;pipFrames 字典是"每设备最新帧",count 只是设备数)
+    @Published var pipFrameTotal = 0
     @Published var pipFrames: [String: CIImage] = [:]
 
     // MARK: - 帧处理(videoQueue 调用)

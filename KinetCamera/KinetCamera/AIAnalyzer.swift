@@ -9,12 +9,13 @@ struct AIAnalysis: Equatable {
     var faceCount: Int = 0
     var compositionHint: String? = nil
     var suggestion: String? = nil   // 一句话建议
+    var colorCast: Double = 0       // 色偏:R-B 通道均值差(0-255 域);>12 偏红,<-12 偏蓝
 
     static let empty = AIAnalysis()
 }
 
 // MARK: - 拍照体检报告(落盘 JSON 伴生文件,可复现)
-struct CaptureReport: Codable {
+struct CaptureReport: Codable, Equatable {
     var beforeBlur: Double
     var beforeExposure: Double
     var afterBlur: Double
@@ -22,6 +23,8 @@ struct CaptureReport: Codable {
     var applied: [String]
     var improved: Bool
     var faceCount: Int
+    var beforeColorCast: Double = 0
+    var afterColorCast: Double = 0
 }
 
 /// 拍后体检:拉普拉斯方差测糊 + 亮度直方图测曝光 + Vision 人脸构图。
@@ -34,6 +37,7 @@ enum AIAnalyzer {
 
         result.blurScore = sharpnessScore(cgImage: cg)
         result.exposureScore = exposureScore(cgImage: cg)
+        result.colorCast = colorCast(cg)
 
         // 人脸(用于构图建议)
         let faceRequest = VNDetectFaceRectanglesRequest()
@@ -64,8 +68,51 @@ enum AIAnalyzer {
         if result.blurScore < 30 { tips.append("画面偏糊,建议稳住或对焦") }
         if result.exposureScore < 25 { tips.append("欠曝,建议加光或提亮") }
         if result.exposureScore > 80 { tips.append("过曝,建议逆光补偿") }
+        if result.colorCast > 20 { tips.append("画面偏暖/偏红") }
+        if result.colorCast < -20 { tips.append("画面偏冷/偏蓝") }
         result.suggestion = tips.isEmpty ? "画质 OK,可拍" : tips.joined(separator:";")
         return result
+    }
+
+    /// 色偏检测:全图 R、B 通道均值差(0-255 域)。
+    /// 白光下 R≈B,暖光源(钨丝灯)R>B 为正,冷光(阴天/屏幕)R<B 为负。
+    /// 检测窗口下采样到 256 边,vDSP 均值,微秒级。
+    static func colorCast(_ cgImage: CGImage) -> Double {
+        let maxDim = 256
+        let scale = min(1.0, Double(maxDim) / Double(max(cgImage.width, cgImage.height)))
+        let w = max(Int(Double(cgImage.width) * scale), 8)
+        let h = max(Int(Double(cgImage.height) * scale), 8)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let ok = rgba.withUnsafeMutableBytes { ptr -> Bool in
+            guard let ctx = CGContext(
+                data: ptr.baseAddress, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard ok else { return 0 }
+        var rSum = 0.0, bSum = 0.0
+        let n = w * h
+        for i in 0..<n {
+            rSum += Double(rgba[i * 4])
+            bSum += Double(rgba[i * 4 + 2])
+        }
+        return (rSum - bSum) / Double(n)
+    }
+
+    /// 色偏修正强度决策(纯函数,可单测):
+    /// |cast| < 8 不动(噪声容差);8-20 轻度纠正;20-40 标准;>40 强纠正但封顶 0.35
+    /// (强色偏往往混着光源光谱缺失,纠过头出灰尸脸,封顶留给用户手动调)
+    static func whiteBalanceGain(forColorCast cast: Double) -> Double {
+        let abs_cast = abs(cast)
+        if abs_cast < 8 { return 0 }
+        if abs_cast < 20 { return 0.18 }
+        if abs_cast < 40 { return 0.35 }
+        return 0.5
     }
 
     /// 拉普拉斯方差(经典清晰度指标,归一化到 0-100)
@@ -155,6 +202,21 @@ enum AIAnalyzer {
             applied.append("轻提亮+0.35EV")
         }
 
+        // 色偏自动白平衡:R-B 均值差驱动,通道增益反向补偿。
+        // 用 CIColorMatrix(物理直观:cast>0 压 R 抬 B),不用 CITemperatureAndTint ——
+        // 其 neutral 滑块有效域窄,超域输出全黑(harness 实测 neutral=11862 全黑)
+        let wbGain = whiteBalanceGain(forColorCast: analysis.colorCast)
+        if wbGain > 0 {
+            // wbGain 0.12/0.24/0.35 → R、B 各反向收 |cast| 方向
+            let rGain = analysis.colorCast > 0 ? 1.0 - wbGain : 1.0 + wbGain
+            let bGain = analysis.colorCast > 0 ? 1.0 + wbGain : 1.0 - wbGain
+            out = out.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: CGFloat(rGain), y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(bGain), w: 0),
+            ])
+            applied.append(analysis.colorCast > 0 ? "AI去暖(\(Int(analysis.colorCast)))" : "AI去冷(\(Int(analysis.colorCast)))")
+        }
+
         if analysis.blurScore < 40 {
             // 锐化 + 微反差,拉克普拉斯方差
             out = out.applyingFilter("CISharpenLuminance", parameters: [
@@ -206,10 +268,10 @@ enum AIAnalyzer {
         return (out, applied)
     }
 
-    /// 修正效果量化:对修正后图重打分
-    static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double) {
-        guard let cg = context.createCGImage(image, from: image.extent) else { return (0, 50) }
-        return (sharpnessScore(cgImage: cg), exposureScore(cgImage: cg))
+    /// 修正效果量化:对修正后图重打分(含色偏复测)
+    static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double, colorCast: Double) {
+        guard let cg = context.createCGImage(image, from: image.extent) else { return (0, 50, 0) }
+        return (sharpnessScore(cgImage: cg), exposureScore(cgImage: cg), colorCast(cg))
     }
 
     /// 亮度均值(CIAreaAverage,AE 闭环用,微秒级)

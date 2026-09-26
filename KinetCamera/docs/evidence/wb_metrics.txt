@@ -1,0 +1,15 @@
+AI 去暖 A/B(合成钨丝灯场景 1280x720,harness scripts/wb_harness.swift 直调 AIAnalyzer)
+═══════════════════════════════════════════════
+常规钨丝灯域(R×1.18 / B×0.82):
+colorCast: +43.9 → +5.6  (|cast|<8 达标,降幅 87%)
+exposure:   96.5 → 51.8  (压高光+白平衡联动,几乎完美归中 50)
+blur:        5.4 → 31.7  (AI补锐同时生效)
+applied: 压高光-0.55EV | AI去暖(43) | AI补锐
+
+极端域(R×1.42 / B×0.62,cast +97.5):
+colorCast: +97.5 → +85.7(wbGain 封顶 0.5,温和纠偏不出灰尸脸 —— 设计意图)
+首次 harness 版曾出 after 全黑:CITemperatureAndTint neutral=11862 超 filter 有效域,
+已改 CIColorMatrix 通道增益(物理直观、无有效域陷阱)—— 单测 testSoftwareZoom +
+AICorrectionTests 全绿防回归。
+
+方法学:同帧修正前后重打分(sharpness/exposure/colorCast 全套),证据图 wb_before/wb_after.png

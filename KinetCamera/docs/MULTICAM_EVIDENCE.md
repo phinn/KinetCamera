@@ -44,3 +44,20 @@ curl -X POST "http://127.0.0.1:17877/switch?id=<iPhoneID>"   # 切 iPhone 主摄
 curl -X POST "http://127.0.0.1:17877/pip?on=1"                # 三源并发(Mac摄+iPhone+屏流)
 curl -X POST http://127.0.0.1:17877/record                    # 双摄 PIP 录像
 ```
+
+## iPhone 连续互通闭环实测(09-26 19:24)
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| 虚拟设备出现 | ✓ "PhinniPhone"的相机 640×480 入 AVFoundation 枚举 | cam_enum 输出 |
+| app 热插拔检测 | ✓ devices 列表自动收录,无需重启 | /status devices[2] |
+| /switch 切主摄 | ✓ activeDeviceID=24AA62C1... 帧流恢复 | /status mainFrameCount 93022→94809 |
+| 实拍 | ✓ 1920×1080 PNG+JSON 落盘 | KinetCamera-20260926-192347-994.png |
+| 录像 7s | ✓ h264 1080p30 + aac 成片 | KinetCamera-20260926-192445.mov |
+| 双源并发 | ✓ iPhone主摄 + Mac内置摄 PIP 同开 | /status pipIDs |
+
+**已知约束(如实入账)**:
+1. 首拍画面全黑(iPhone 镜头物理朝下扣在桌面),非软件问题;待手机拿起重拍明亮样张
+2. 连续互通音频同样 -91dB(走本机 HAL 上游,五层取证结论一致)
+3. iPhone 锁屏/闲置后虚拟设备自动断开(系统行为),重新亮屏即恢复,app 热插拔自动重新收录
+4. 连续互通相机源帧率 ~12fps(系统限制),录像成片仍 30fps 规格(writer 时间轴)

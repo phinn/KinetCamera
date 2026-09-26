@@ -1,0 +1,24 @@
+{
+ "method": "CC0 free-license portrait (pexels 774909, free commercial use), Vision 1-face detect conf=1.0 bbox 643x643px, full app-identical pipeline (beauty3_run_v2, quality=.photo)",
+ "faceRect_ci": {
+  "x": 392.7,
+  "y": 1009.4,
+  "w": 642.7,
+  "h": 642.7
+ },
+ "slim_strength": 0.8,
+ "quantization": {
+  "method": "y-averaged jaw-band (y1080-1330) R-B chroma profile, max-gradient contour detection, sub-noise (<1px)",
+  "faceWidth_before_px": 480,
+  "faceWidth_after_px": 470,
+  "faceWidth_change_px": -10,
+  "faceWidth_change_pct": -2.1,
+  "left_contour_inset_px": 2,
+  "right_contour_inset_px": 8,
+  "symmetry_diff_px": 6,
+  "warp_activation_check": "pixel-diff >12 gray: 57096 px, x spans full face box 392→1020, L/R halves 27970/29126 px (symmetric), y concentrated 1037-1388 (jaw band)",
+  "theory_check": "peakShift=0.045*0.8*642.7=23.1px at center axis; gaussian sigma 0.42*fw/2 attenuates to ~1.4-3.5px at contour — measured 2/8px consistent"
+ },
+ "evidence": "faceslim_cc0_ab.png",
+ "note": "fake blocker removed: real-face A/B now fully automated, no user presence needed"
+}

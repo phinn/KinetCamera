@@ -15,10 +15,12 @@ struct FilterSettings: Equatable {
     var vignette: Double = 0         // 0-1 暗角
     var focusPeaking: Double = 0     // 0-1 对焦峰值:合焦边缘伪色高亮(0=关)
     var exposureEV: Double = 0       // -2..+2 手动曝光 EV(软件增益档,macOS 硬件无曝光API)
+    var softwareZoom: Double = 1.0   // 1.0-8.0 软件中心裁切变焦(硬件 zoomFactor 不可用时兜底)
 
     var isNeutral: Bool {
         smoothing == 0 && whitening == 0 && brightening == 0 && warmth == 0
             && sharpen == 0 && saturation == 0 && backgroundBlur == 0 && vignette == 0
+            && softwareZoom == 1.0
     }
     static let neutral = FilterSettings(sharpen: 0)
 }
@@ -59,6 +61,21 @@ final class FilterPipeline {
 
     func apply(_ input: CIImage, settings: FilterSettings, time: CMTime, quality: Quality) -> CIImage {
         var image = input
+
+        // 0a) 软件中心裁切变焦(硬件 zoomFactor 不可用的设备兜底:合成源/屏流/部分 USB 摄)
+        if settings.softwareZoom > 1.001 {
+            let z = CGFloat(settings.softwareZoom)
+            let e = input.extent
+            let cropW = e.width / z, cropH = e.height / z
+            let cropRect = CGRect(x: e.midX - cropW / 2, y: e.midY - cropH / 2, width: cropW, height: cropH)
+            // 裁切后 Lanczos 放大;origin 会漂移(实测 (25,25)→(50,50)),必须拉回原点,
+            // 否则画面整体偏移半个视野(单测 testSoftwareZoomCropsAndRestoresExtent 抓出)
+            let scaled = input
+                .cropped(to: cropRect)
+                .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: z])
+            image = scaled.transformed(by: CGAffineTransform(
+                translationX: -scaled.extent.minX, y: -scaled.extent.minY))
+        }
 
         // 0) 手动曝光 EV(软件档): 乘法增益 2^EV,±2 EV 连续可调;
         //    macOS 硬件曝光 API 不存在(iOS only),这是 Mac 上唯一可行的手动曝光路径

@@ -52,6 +52,7 @@ final class CameraViewModel: ObservableObject {
             self?.settings.smoothing = ui["smoothing"] as? Double ?? 0
             self?.settings.whitening = ui["whitening"] as? Double ?? 0
             self?.settings.backgroundBlur = ui["backgroundBlur"] as? Double ?? 0
+            self?.settings.faceSlim = ui["faceSlim"] as? Double ?? 0
         }
     }
 

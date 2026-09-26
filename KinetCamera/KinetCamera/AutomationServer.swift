@@ -154,26 +154,29 @@ final class AutomationServer {
             reply(conn, json: "{\"ok\":true,\"brightnessFactor\":1.0,\"note\":\"macOS only\"}")
             #endif
         case ("POST", "/beauty"):
-            // 美颜+人像虚化一键: /beauty?s=0.6&w=0.4&b=0.8 或 /beauty?preset=off
+            // 美颜+人像虚化+瘦脸一键: /beauty?s=0.6&w=0.4&b=0.8&slim=0.7 或 /beauty?preset=off
             var s = 0.0, w = 0.0, b = 0.0
             func param(_ key: String) -> Double? {
                 guard let r = target.range(of: "\(key)=") else { return nil }
                 let str = target[r.upperBound...].components(separatedBy: "&").first ?? ""
                 return Double(str)
             }
+            var slim = 0.0
             if target.contains("preset=off") {
-                s = 0; w = 0; b = 0
+                s = 0; w = 0; b = 0; slim = 0
             } else {
                 s = min(max(param("s") ?? 0.6, 0), 1)
                 w = min(max(param("w") ?? 0.4, 0), 1)
                 b = min(max(param("b") ?? 0, 0), 1)
+                slim = min(max(param("slim") ?? 0, 0), 1)
             }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
                     name: Notification.Name("kinetSetBeauty"), object: nil,
-                    userInfo: ["smoothing": s, "whitening": w, "backgroundBlur": b])
+                    userInfo: ["smoothing": s, "whitening": w, "backgroundBlur": b,
+                               "faceSlim": slim])
             }
-            reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w),\"backgroundBlur\":\(b)}")
+            reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w),\"backgroundBlur\":\(b),\"faceSlim\":\(slim)}")
         case ("POST", "/exposure"):
             // 手动曝光(软件EV档): /exposure?ev=1.0 或 /exposure?ev=auto(回0)
             var ev = 0.0

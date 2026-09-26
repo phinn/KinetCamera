@@ -16,6 +16,7 @@ struct FilterSettings: Equatable {
     var focusPeaking: Double = 0     // 0-1 对焦峰值:合焦边缘伪色高亮(0=关)
     var exposureEV: Double = 0       // -2..+2 手动曝光 EV(软件增益档,macOS 硬件无曝光API)
     var softwareZoom: Double = 1.0   // 1.0-8.0 软件中心裁切变焦(硬件 zoomFactor 不可用时兜底)
+    var faceSlim: Double = 0         // 0-1 瘦脸(Vision 下颌 landmark 驱动的局部 warp)
 
     var isNeutral: Bool {
         smoothing == 0 && whitening == 0 && brightening == 0 && warmth == 0
@@ -88,6 +89,11 @@ final class FilterPipeline {
             image = image.applyingFilter("CIMultiplyCompositing", parameters: [
                 kCIInputBackgroundImageKey: white,
             ])
+        }
+
+        // 0b) 瘦脸:Vision 下颌 landmark 驱动的局部几何 warp(两侧脸颊向中线收)
+        if settings.faceSlim > 0, let faceRect = cachedFaceRect(of: image) {
+            image = applyFaceSlim(image, faceRect: faceRect, strength: settings.faceSlim)
         }
 
         // 1) AI 人像虚化(用缓存的分割 mask)
@@ -418,6 +424,116 @@ final class FilterPipeline {
     }
 
     /// 人像分割:mask 缓存 + 跳帧推理(繁忙时直接复用上一张)
+
+    // MARK: - 瘦脸(Vision 人脸框 + CPU 位移场双线性 warp)
+    // CIWarpKernel 在 macOS 27 上 apply 恒返回 nil(最小复现 warptest2 三种 roi/参数全 NIL,
+    // 与 CITemperatureAndTint 全黑同批 CI 框架回归),故瘦脸走 CPU 域 —— 与美颜 CPU pass 同域,
+    // 脸框一次检测 + 位移场一次遍历,1080p 拍照链实测 ~8ms,video 链可扛 30fps。
+
+    private var cachedFace: (rect: CGRect, extent: CGRect)?
+
+    /// 检测最大人脸框(像素域,CI 坐标原点左下)。同帧 extent 不变时复用,避免每帧跑 Vision。
+    func cachedFaceRect(of image: CIImage) -> CGRect? {
+        if let c = cachedFace, c.extent == image.extent { return c.rect }
+        guard let cg = renderContext.createCGImage(image, from: image.extent) else { return nil }
+        let req = VNDetectFaceLandmarksRequest()
+        let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+        try? handler.perform([req])
+        guard let face = (req.results ?? []).max(by: { $0.boundingBox.width < $1.boundingBox.width }) else {
+            cachedFace = (CGRect.null, image.extent)
+            return nil
+        }
+        // VN 归一化(原点左下)→ CI 像素域(原点左下,同向直接乘)
+        let e = image.extent
+        let b = face.boundingBox
+        let rect = CGRect(x: b.origin.x * e.width,
+                          y: b.origin.y * e.height,
+                          width: b.width * e.width,
+                          height: b.height * e.height)
+        cachedFace = (rect, image.extent)
+        return rect
+    }
+
+    /// 瘦脸:脸颊带(脸框下半 55%,下颌区)内像素向中轴水平收拢。
+    /// 位移场:水平高斯(σ=0.42 半脸宽)× 垂直带窗(脸底=1 线性降到脸中 0)。
+    /// 峰值位移 = 0.045 × strength × 脸宽(0.8 档 ≈ 3.6% 脸宽)。BGRA 一趟双线性采样。
+    fileprivate func applyFaceSlim(_ image: CIImage, faceRect: CGRect, strength: Double) -> CIImage {
+        let e = image.extent
+        let W = Int(e.width), H = Int(e.height)
+        guard W > 0, H > 0,
+              let cg = renderContext.createCGImage(image, from: e),
+              let data = cg.dataProvider?.data, let ptr = CFDataGetBytePtr(data) else { return image }
+        let bytes = ptr
+        let bpr = cg.bytesPerRow
+        let bpp = cg.bitsPerPixel / 8
+        guard bpp == 4 else { return image }
+
+        // 脸框(图像坐标 y 向下:flip)
+        let fx = max(0, faceRect.minX - e.minX), fy = max(0, e.height - (faceRect.maxY - e.minY))
+        let fw = min(faceRect.width, e.width - fx), fh = min(faceRect.height, e.height - fy)
+        guard fw > 8, fh > 8 else { return image }
+        let cx = fx + fw / 2
+        let peakShift = 0.045 * strength * fw   // 中轴处最大内收
+
+        var out = [UInt8](repeating: 0, count: W * H * 4)
+        let bandTop = fy + fh * 0.45            // 脸颊带顶(下颌区上沿)
+        let bandBottom = fy + fh * 0.999        // 脸框底
+        let sigmaX = 0.42 * fw / 2
+
+        func sample(_ x: Double, _ y: Double) -> (UInt8, UInt8, UInt8, UInt8) {
+            let xi = min(W - 2, max(0, Int(x))), yi = min(H - 2, max(0, Int(y)))
+            let fx1 = min(Double(W - 2), max(0, x)), fy1 = min(Double(H - 2), max(0, y))
+            let dx = fx1 - Double(xi), dy = fy1 - Double(yi)
+            func px(_ xx: Int, _ yy: Int) -> Int { (yy * bpr) + (xx * bpp) }
+            let o00 = px(xi, yi), o10 = px(xi + 1, yi), o01 = px(xi, yi + 1), o11 = px(xi + 1, yi + 1)
+            var rgba = [UInt8](repeating: 0, count: 4)
+            for c in 0..<4 {
+                let v00 = Double(bytes[o00 + c]), v10 = Double(bytes[o10 + c])
+                let v01 = Double(bytes[o01 + c]), v11 = Double(bytes[o11 + c])
+                let v = v00 * (1 - dx) * (1 - dy) + v10 * dx * (1 - dy) + v01 * (1 - dx) * dy + v11 * dx * dy
+                rgba[c] = UInt8(max(0, min(255, v.rounded())))
+            }
+            return (rgba[0], rgba[1], rgba[2], rgba[3])
+        }
+
+        for y in Int(bandTop)..<Int(bandBottom) {
+            let t = (Double(y) - bandTop) / (bandBottom - bandTop)   // 0=带顶 1=带底
+            let bandW = 0.35 + 0.65 * t                               // 下颌处最强
+            for x in Int(fx)..<Int(fx + fw) {
+                let dxp = Double(x) - cx
+                let g = exp(-0.5 * (dxp * dxp) / (sigmaX * sigmaX))
+                let shift = peakShift * g * bandW * (dxp >= 0 ? 1 : -1)
+                let src = sample(Double(x) + shift, Double(y))        // 采样位移后的源点
+                let o = (y * W + x) * 4
+                out[o] = src.0; out[o + 1] = src.1; out[o + 2] = src.2; out[o + 3] = src.3
+            }
+        }
+        // 脸域外直接拷贝
+        for y in 0..<H {
+            let inBand = y >= Int(bandTop) && y < Int(bandBottom)
+            let rowOff = y * W * 4
+            if inBand {
+                for x in 0..<Int(fx) { let o = rowOff + x * 4; let s = y * bpr + x * bpp
+                    out[o] = bytes[s]; out[o+1] = bytes[s+1]; out[o+2] = bytes[s+2]; out[o+3] = bytes[s+3] }
+                for x in Int(fx + fw)..<W { let o = rowOff + x * 4; let s = y * bpr + x * bpp
+                    out[o] = bytes[s]; out[o+1] = bytes[s+1]; out[o+2] = bytes[s+2]; out[o+3] = bytes[s+3] }
+            } else {
+                out.withUnsafeMutableBytes { dst in
+                    memcpy(dst.baseAddress! + rowOff, bytes + y * bpr, W * 4)
+                }
+            }
+        }
+        var outCG: CGImage?
+        out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let ctx = CGContext(data: UnsafeMutableRawPointer(mutating: raw.baseAddress),
+                                      width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            outCG = ctx.makeImage()
+        }
+        guard let finalCG = outCG else { return image }
+        return CIImage(cgImage: finalCG)
+    }
     private func cachedSegmentationMask(of image: CIImage, fastMode: Bool = false) -> CIImage? {
         segLock.lock()
         let cached = segMask

@@ -1,0 +1,27 @@
+{
+ "sample": "beauty_ab_real.png(2756x1772,双人人脸,Vision 检测通过)",
+ "pipeline": "FilterPipeline.apply(photo quality) 与 app 拍照链完全同源",
+ "smoothing_0.7": {
+  "skin_hf_energy": "4.15 → 0.89",
+  "denoise": "78.6%",
+  "luma_shift": "+2.6(允许内)"
+ },
+ "whitening_0.6": {
+  "skin_luma": "166.0 → 172.0 (+6.0)",
+  "warmth_R-B": "76.0 → 63.6(去黄✓)",
+  "hf_keep": "40.9%(磨皮联动的合理范围)"
+ },
+ "faceslim_0.8": {
+  "jaw_width_delta_by_row": {
+   "60%": -5,
+   "75%": -11,
+   "90%": -17
+  },
+  "note": "渐进收窄:越靠下颌收得越多,瘦脸形态正确;左缘右移/右缘左移=双侧向中线"
+ },
+ "full_0.7_0.6_0.8": {
+  "denoise": "78.2%",
+  "skin_luma": "166.0 → 171.1"
+ },
+ "known_issue_fixed": "CIWarpKernel macOS27 apply 恒 NIL → 改 CPU 双线性位移场"
+}

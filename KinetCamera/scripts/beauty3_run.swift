@@ -45,6 +45,8 @@ struct Main {
         save("03_faceslim08", s3)
         var s4 = s0; s4.smoothing = 0.7; s4.whitening = 0.6; s4.faceSlim = 0.8
         save("04_full", s4)
+        var s5 = s4; s5.sharpen = 0.5
+        save("05_full_sh", s5)
         if let r = pipeline.cachedFaceRect(of: input) {
             print("faceRect: \(r)")
         } else {

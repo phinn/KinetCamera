@@ -14,6 +14,9 @@
 | PIP 双源合成 | ✅ | dual_source_pip_frame100.png + 本轮 JSON 标记 | — |
 | 跨设备录像时基(PTS 守卫) | ✅ | lastVideoPTS 守卫后成片时长正常(本轮 3.83s✓) | 内置→iPhone 切换后录像复验(插线) |
 | iPhone 三摄位切换(超广角/长焦) | ❌ | — | iOS 侧 AVFoundation multisource;Continuity 只透出主摄位,需 iOS app 桥或 Cable 直连枚举 |
+| iOS 多摄并发(AVCaptureMultiCamSession) | ✅代码 / 🟡待真机 | 主 session+PIP 子会话均条件建 MultiCamSession(isMultiCamSupported 运行时探测,iPhone XS+);preset 走 .inputPriority(input.activeFormat 定分辨率);双端编译过 | 真机前后双摄并发跑通+录双轨验证 |
+| 真多轨录像(双视频流同文件) | ✅ | ffprobe: v1920x1080@30 + v960x540@14.8 双流各自抽帧;辅轨实时性两刻像素差2.22(09-26 22:55,docs/MULTITRACK_EXIF_20260926.md) | 辅轨上限3路,真机多摄各自一轨 |
+| 拍照 EXIF 回填 | ✅ | CGImageSource 直读:DateTimeOriginal/Digitized/LensMake/LensModel/ExposureProgram/WhiteBalance+TIFF Software;JPEG q0.95+PNG 保底同戳 | ISO/快门/光圈 macOS 平台墙留空,iOS 写真值 |
 
 ## 二、视频录制
 
@@ -21,7 +24,7 @@
 |---|---|---|---|
 | h264+aac 录像 | ✅ | 本轮 ffprobe:3.83s,h264 1280x720 30fps + aac | — |
 | 录像实时美颜烧入 | ✅ | video_beauty_ab.png 99.8% 像素差异 | — |
-| PIP 烧入录像 | ✅代码 / 🟡本轮 | PIP 录像实测过(09-26 早) | 本轮未复测 |
+| PIP 烧入录像 | 🗑️ 已删 | 被"真多轨"替代:辅摄独立视频轨(不烧主画面),FCP/PR 可拆轨多机位 | 拍照 PIP 同框保留 |
 | 变焦 zoomFactor | ❌ UI 有按钮(1x),vm.setZoom 在;数码变焦仅内置摄 | 需实装 videoZoomFactor 档位表 | 上轮遗留 |
 | 音频静音告警 | ✅ | 本轮 /status audioSilentWarning:true(Oray 驱动环境) | — |
 

@@ -153,10 +153,11 @@ final class CameraViewModel: ObservableObject {
         }
 
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
-        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
-            let (fixed, fixes) = AIAnalyzer.autoCorrect(finalImage, analysis: analysis)
-            finalImage = fixed
-            applied += fixes   // 追加不覆盖:保留前面的 PIP同框 标记
+        // 美颜纳入修正链:人脸在场即触发质感兜底(用户显式开磨皮时 AIAnalyzer 内自动跳过防双重涂抹)
+        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || analysis.faceCount > 0 {
+            let corrected = AIAnalyzer.autoCorrect(raw, analysis: analysis, userSmoothing: beauty.smoothing)
+            finalImage = corrected.image
+            applied += corrected.appliedNames   // 追加不覆盖:保留前面的 PIP同框 标记
         }
 
         // 美颜层最后套(与预览同一条链,拍前所见即所得)

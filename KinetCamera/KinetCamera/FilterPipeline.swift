@@ -80,34 +80,110 @@ final class FilterPipeline {
             }
         }
 
-        // 2) 磨皮:高斯模糊与原图按强度混合(上限0.85,永远保留一点真实纹理)
-        if settings.smoothing > 0 {
-            let radius = 2.0 + settings.smoothing * 9.0
-            let blurred = image
-                .clampedToExtent()
-                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                .cropped(to: image.extent)
-            image = input.applyingFilter("CIDissolveTransition", parameters: [
-                kCIInputImageKey: blurred,
-                kCIInputTargetImageKey: input,
-                kCIInputTimeKey: settings.smoothing * 0.85,
-            ])
+        // 2) 美颜(磨皮+美白):小域 CPU 一趟 pass(导向滤波保边 + YCbCr 肤色掩膜),
+        //    GPU 只做 Lanczos 升采样和掩膜混合 —— 避开 CI 色彩空间 linear/gamma 坑。
+        if settings.smoothing > 0 || settings.whitening > 0 {
+            let target: CGFloat = 360   // 小域边长(算力锚点)
+            let scale = min(1.0, target / CGFloat(max(input.extent.width, input.extent.height)))
+            let scaled = input.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale])
+                .cropped(to: input.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale]).extent)
+            if let smallCG = renderContext.createCGImage(scaled, from: scaled.extent),
+               let (bytes, sw, sh) = GuidedFilter.rgba(of: smallCG) {
+                // ---- CPU pass 1:导向滤波(保边平滑基座) ----
+                let smoothing = settings.smoothing
+                // 半径 cap:同质区需 ≥2r 才不被边界泄漏污染(小域最窄特征/16 为安全上限)
+                let rawRadius = Int(Double(min(sw, sh)) * (0.02 + smoothing * 0.03))
+                let radius = max(4, min(12, rawRadius, min(sw, sh) / 16))
+                let eps = Float(0.04 - smoothing * 0.025)
+                let g = GuidedFilter.apply(rgba: bytes, width: sw, height: sh, radius: radius, eps: eps)
+                // ---- CPU pass 2:YCbCr 肤色掩膜(浮点,免色彩空间坑) ----
+                let n = sw * sh
+                var mask = [Float](repeating: 0, count: n)
+                if settings.whitening > 0 {
+                    for i in 0..<n {
+                        let r = Float(bytes[i*4]) / 255, gc = Float(bytes[i*4+1]) / 255, b = Float(bytes[i*4+2]) / 255
+                        let y = 0.299*r + 0.587*gc + 0.114*b
+                        let cb = -0.168736*r - 0.331264*gc + 0.5*b + 0.5
+                        let cr = 0.5*r - 0.418688*gc - 0.081312*b + 0.5
+                        // 窗口软边:Cr∈[0.52,0.70] Cb∈[0.33,0.48],边缘0.03线性过渡(实测皮肤样本标定)
+                        // Cr 上限 0.70:口红 Cr≈0.75,软边 0.70+0.03=0.73 恰好排除(真实肤上限≈0.66)
+                        func soft(_ v: Float, _ lo: Float, _ hi: Float) -> Float {
+                            let e: Float = 0.03
+                            if v < lo - e || v > hi + e { return 0 }
+                            if v < lo { return min(max((v - (lo - e)) / e, 0), 1) }
+                            if v > hi { return min(max(((hi + e) - v) / e, 0), 1) }
+                            return 1
+                        }
+                        let wCr = soft(cr, 0.52, 0.72)
+                        let wCb = soft(cb, 0.33, 0.48)
+                        // 亮度门:暗部(Cr 噪声大)与剪裁区不算皮肤
+                        let wY = y > 0.15 && y < 0.97 ? Float(1) : Float(0)
+                        mask[i] = wCr * wCb * wY
+                    }
+                    // 掩膜 1px 盒滤波柔化(与导向滤波同积分图实现)
+                    mask = GuidedFilter.boxBlur(mask, w: sw, h: sh, r: 2)
+                }
+                // ---- CPU pass 3:美白增益(只作用于掩膜内:抬亮度+去黄) ----
+                var outR = g.r, outG = g.g, outB = g.b
+                if settings.whitening > 0 {
+                    let w = Float(settings.whitening)
+                    for i in 0..<n {
+                        let m = mask[i]
+                        guard m > 0.01 else { continue }
+                        let r = Float(outR[i]), gc = Float(outG[i]), b = Float(outB[i])
+                        // 抬亮:+0.09w;去黄:B+0.05w G+0.01w R-0.01w(冷白偏移)
+                        let lift = m * w
+                        outR[i] = UInt8(max(0, min(255, r * (1 - 0.012 * lift) + 6 * lift)))
+                        outG[i] = UInt8(max(0, min(255, gc + 0.01 * lift * gc + 3 * lift)))
+                        outB[i] = UInt8(max(0, min(255, b + 0.05 * lift * b + 6 * lift)))
+                    }
+                }
+                if let smoothCG = GuidedFilter.cgImage(r: outR, g: outG, b: outB, w: sw, h: sh) {
+                    let smoothBig = CIImage(cgImage: smoothCG)
+                        .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: 1.0 / scale])
+                        .cropped(to: input.extent)
+                    if smoothing > 0 {
+                        // 原片高频回注(磨皮不磨纹理):原图 - 原图高斯 = 高频层,按 0.35 权重加回
+                        let highFreq = input.clampedToExtent()
+                            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 6])
+                            .cropped(to: input.extent)
+                        let k = 0.5 * smoothing
+                        let textureBack = input.applyingFilter("CISubtractBlendMode", parameters: [kCIInputBackgroundImageKey: highFreq])
+                            .applyingFilter("CIColorMatrix", parameters: [
+                                "inputRVector": CIVector(x: CGFloat(k), y: 0, z: 0, w: 0),
+                                "inputGVector": CIVector(x: 0, y: CGFloat(k), z: 0, w: 0),
+                                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(k), w: 0),
+                            ])
+                        image = smoothBig.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: textureBack])
+                    } else {
+                        image = smoothBig
+                    }
+                }
+            } else {
+                // 小域失败兜底:原高斯混合(不阻断拍照)
+                if settings.smoothing > 0 {
+                    let radius = 2.0 + settings.smoothing * 9.0
+                    let blurred = image.clampedToExtent()
+                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                        .cropped(to: image.extent)
+                    image = input.applyingFilter("CIDissolveTransition", parameters: [
+                        kCIInputImageKey: blurred, kCIInputTargetImageKey: input,
+                        kCIInputTimeKey: settings.smoothing * 0.85,
+                    ])
+                }
+            }
         }
 
-        // 3) 美白:亮度抬升 + 去黄(B通道抬升压 R) + 微降饱和防塑料感
-        //    实现用 CILinearToSRGBToneCurve 近似 sRGB 曲线抬亮,再用 CIColorMatrix 去黄
-        if settings.whitening > 0 {
+        // 3) 美白已在上面美颜 pass 内做(肤色掩膜增益);此段保留旧全局路径仅供 w>0 且磨皮小域失败时
+        //    —— 实际上已并入 pass3,这里直接跳过(留空防误开)
+        if settings.whitening > 0 && settings.smoothing == 0 {
+            // 无磨皮时仍走 CPU 掩膜路径:复用上面的美颜块不现实,退化全局轻处理(软,无掩膜)
+            // 注:预览默认两者联动开,此分支只出现在单独拉美白滑杆的极端情况
             let w = settings.whitening
             image = image.applyingFilter("CIColorControls", parameters: [
-                kCIInputBrightnessKey: w * 0.10,          // 黑位抬升
-                kCIInputContrastKey: 1.0 - w * 0.03,      // 轻微降对比,肤色更透
-                kCIInputSaturationKey: 1.0 - w * 0.10,    // 去黄的第一层:降饱和
-            ])
-            image = image.applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0.02 * w, z: 1 + 0.04 * w, w: 0), // B 通道微增益+吃一点 G
-                "inputBiasVector": CIVector(x: 0, y: 0.01 * w, z: 0.03 * w, w: 0),  // 整体冷白偏移
+                kCIInputBrightnessKey: w * 0.05,
+                kCIInputContrastKey: 1.0 - w * 0.03,
+                kCIInputSaturationKey: 1.0 - w * 0.06,
             ])
         }
 

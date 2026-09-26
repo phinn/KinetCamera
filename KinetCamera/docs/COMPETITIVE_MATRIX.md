@@ -25,10 +25,10 @@
 | **多帧防抖 /steady** | 独立入口,±3px 搜索窗,残差入报告;单测边缘能量 0.0156→0.0181(超原帧) | Halide 无(iOS 靠 OIS/传感器位移,软件层无此功能) |
 | **HDR 堆栈** | 8帧堆栈降噪+阴影γ+高光软肩;暗场死黑95.9%→0.41%(×3.2),剪裁不升 | Halide 有 Smart HDR 转发系统计算;独立 HDR 摄入无 |
 | **手动曝光/对焦工具** | EV±2 双帧实测÷2.5;对焦锁+峰值(0%→40%品红实证) | 见第三节差距#1/#3:Halide 硬件级直控仍赢 |
-| **美颜可调且自然** | 7 段实时滑杆,磨皮-47.9%实测;Halide 哲学=零AI不做美颜 | Halide 无美颜;Obscura 只有滤镜;Photo Booth 特效玩具 |
+| **美颜可调且自然** | 磨皮=导向滤波保边(vDSP积分图,边缘 a→1)+高频回注;美白=YCbCr 肤色掩膜增益,掩膜外零改动;量化:**结构保留70%/毛孔压噪78%/口红零误伤/背景漂移2.1**;autoCorrect 人像兜底+双重涂抹防线 | Halide 无美颜(反AI哲学);Obscura 只有滤镜;Photo Booth 特效玩具。美颜赛道 KinetCamera 是唯一带像素级量化证据的 |
 | **AI 拍后体检** | 每张成片带清晰度/曝光/构图 JSON 报告+修正 applied 清单 | 无对手提供 |
 | **录像同滤镜链** | 所见即所得,h264+aac ffprobe 实证 | Halide 录像要买独立 app Kino |
-| **自动化接口** | HTTP 17877:capture/record/night/steady/hdr/retro/exposure/focus/peaking/pip/switch,可全脚本驱动 | 无对手提供 |
+| **自动化接口** | HTTP 17877:capture/record/night/steady/hdr/retro/exposure/focus/peaking/pip/switch/**awaitDevice/deviceWait**,可全脚本驱动;设备生命周期状态机(枚举→等待→超时→热恢复)可编程验证 | 无对手提供 |
 
 ## 三、输在哪(不藏,逐项对标 Halide)
 

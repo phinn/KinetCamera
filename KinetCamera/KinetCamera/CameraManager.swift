@@ -82,6 +82,61 @@ final class CameraManager: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.refreshDevices() }
     }
 
+    /// 设备离线状态机:枚举 → 在线即接管 → 离线重试 → 超时降级 → 上线热恢复。
+    /// 覆盖 iPhone 连续互通相机(解锁才广播、锁屏即离线)的完整生命周期。
+    enum DeviceWaitState: Equatable {
+        case idle                       // 目标设备在线或无等待目标
+        case waiting(attempt: Int)      // 枚举等待中
+        case degraded(reason: String)   // 超时降级(合成源/切主摄)
+    }
+    private(set) var deviceWaitState: DeviceWaitState = .idle
+    private var waitTimer: Timer?
+    private var waitAttempts = 0
+    let waitMaxAttempts = 10           // 10 × 1s = 10s 超时
+
+    /// 等待指定设备上线:每秒重枚举,命中即切主摄;超时降级并保持后台监听,上线自动恢复。
+    /// 自动化验证入口:枚举 → 等待 → 超时 → 恢复 全路径可编程触发。
+    func awaitDevice(id: String, timeoutAttempts: Int = 10, onOutcome: ((DeviceWaitState) -> Void)? = nil) {
+        waitTimer?.invalidate()
+        waitAttempts = 0
+        waitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.waitAttempts += 1
+            let found = self.devices.contains { $0.uniqueID == id }
+            if found {
+                t.invalidate()
+                self.deviceWaitState = .idle
+                NSLog("[KinetCamera] device %@ back online after %d s — hot-resume", id, self.waitAttempts)
+                self.switchDevice(to: id)
+                onOutcome?(.idle)
+            } else if self.waitAttempts >= timeoutAttempts {
+                t.invalidate()
+                let reason = "设备 \(id.prefix(8)) 等待超时(\(timeoutAttempts)s),已降级;上线将自动恢复"
+                self.deviceWaitState = .degraded(reason: reason)
+                NSLog("[KinetCamera] %@", reason)
+                // 降级动作:若当前主摄恰好是掉线设备,健康检查会把合成源拉起(既有链路)
+                onOutcome?(.degraded(reason: reason))
+            } else {
+                self.deviceWaitState = .waiting(attempt: self.waitAttempts)
+                onOutcome?(.waiting(attempt: self.waitAttempts))
+            }
+        }
+        RunLoop.main.add(waitTimer!, forMode: .common)
+    }
+
+    /// 即时接管成功后重置状态机(server 在线分支调用)
+    func clearDeviceWaitState() {
+        deviceWaitState = .idle
+    }
+
+    var deviceWaitStatusMessage: String {
+        switch deviceWaitState {
+        case .idle: return ""
+        case .waiting(let n): return "等待设备上线…(\(n)s)"
+        case .degraded(let r): return r
+        }
+    }
+
     // MARK: - 设备枚举 + 权限
     func refreshDevices() {
         assert(Thread.isMainThread)
@@ -104,6 +159,14 @@ final class CameraManager: NSObject, ObservableObject {
             found.append(d)
         }
         devices = found
+        // 离线清理:PIP 列表里已消失的设备(锁屏的 iPhone/拔掉的 USB 摄像头)立即摘除,
+        // 防成片合成引用死源;主摄掉线时交给 awaitDevice/健康检查降级,不在这里强切。
+        let liveIDs = Set(found.map { $0.uniqueID })
+        let deadPIP = pipDeviceIDs.filter { $0 != ScreenSourceController.id && !liveIDs.contains($0) }
+        if !deadPIP.isEmpty {
+            pipDeviceIDs.removeAll { deadPIP.contains($0) }
+            NSLog("[KinetCamera] PIP devices went offline, removed: %@", deadPIP.joined(separator: ","))
+        }
         if activeDeviceID == nil || !devices.contains(where: { $0.uniqueID == activeDeviceID }) {
             activeDeviceID = devices.first?.uniqueID
         }

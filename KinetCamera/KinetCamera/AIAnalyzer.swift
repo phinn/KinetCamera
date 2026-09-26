@@ -136,7 +136,8 @@ enum AIAnalyzer {
     }
 
     /// 低分画面 → 修正链。返回(修正后图, 施加的修正名列表)。
-    static func autoCorrect(_ image: CIImage, analysis: AIAnalysis) -> (CIImage, [String]) {
+    /// userSmoothing > 0.2 视为用户显式磨皮,自动美颜步跳过(防双重涂抹)。
+    static func autoCorrect(_ image: CIImage, analysis: AIAnalysis, userSmoothing: Double = 0) -> (image: CIImage, appliedNames: [String]) {
         var out = image
         var applied: [String] = []
 
@@ -173,6 +174,34 @@ enum AIAnalyzer {
                 "inputNeutral": CIVector(x: 6500, y: 6500),
             ])
             applied.append("人像色温中性化")
+        }
+
+        // 人像美颜修正:人脸在场 → 磨皮+肤色掩膜美白(质感层兜底)
+        // 双重涂抹防线:用户滑杆显式开磨皮(≥0.2)时跳过
+        if analysis.faceCount > 0 && userSmoothing < 0.2 {
+            let skin = out.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0),
+                "inputGVector": CIVector(x: -0.168736, y: -0.331264, z: 0.5, w: 0.5),
+                "inputBVector": CIVector(x: 0.5, y: -0.418688, z: -0.081312, w: 0.5),
+            ]).applyingFilter("CIColorClamp", parameters: [
+                "inputMinComponents": CIVector(x: 0, y: 0.49, z: 0.33, w: 0),
+                "inputMaxComponents": CIVector(x: 0, y: 0.75, z: 0.48, w: 1),
+            ]).applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0, y: 12.5, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 12.5, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 12.5, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: -9.25, z: -7.06, w: 0),
+            ])
+            let skinMask = skin.clampedToExtent()
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.0])
+                .cropped(to: out.extent)
+            let polished = out.applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 5.0])
+            out = polished.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputImageKey: polished,
+                kCIInputBackgroundImageKey: out,
+                kCIInputMaskImageKey: skinMask,
+            ])
+            applied.append("AI美颜(磨皮+肤色美白)")
         }
         return (out, applied)
     }

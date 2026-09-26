@@ -195,6 +195,36 @@ final class AutomationServer {
                     self.reply(conn, json: "{\"error\":\"need id=\"}", status: "400 Bad Request")
                 }
             }
+        case ("POST", "/awaitDevice"):
+            // /awaitDevice?id=<deviceID>[&timeout=N] — 离线设备状态机:枚举→等待→超时降级→上线热恢复
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                guard let range = target.range(of: "id=") else {
+                    self.reply(conn, json: "{\"error\":\"need id=\"}", status: "400 Bad Request")
+                    return
+                }
+                let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
+                var timeout = vm.manager.waitMaxAttempts
+                if let tr = target.range(of: "timeout="), let v = Int(String(target[tr.upperBound...]).components(separatedBy: "&").first ?? "") {
+                    timeout = max(1, min(60, v))
+                }
+                let online = vm.manager.devices.contains { $0.uniqueID == id }
+                if online {
+                    vm.manager.clearDeviceWaitState()   // 即时接管时清掉残留的 degraded/waiting 状态
+                    self.reply(conn, json: "{\"ok\":true,\"state\":\"online\",\"active\":\"\(id)\"}")
+                    vm.manager.switchDevice(to: id)
+                } else {
+                    self.reply(conn, json: "{\"ok\":true,\"state\":\"waiting\",\"timeout\":\(timeout)}")
+                    vm.manager.awaitDevice(id: id, timeoutAttempts: timeout)
+                }
+            }
+        case ("GET", "/deviceWait"):
+            // 状态机查询:idle / waiting(n) / degraded(reason)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                let msg = vm.manager.deviceWaitStatusMessage
+                self.reply(conn, json: "{\"state\":\"\(msg.isEmpty ? "idle" : (msg.hasPrefix("等待") ? "waiting" : "degraded"))\",\"message\":\"\(msg)\"}")
+            }
         case ("POST", "/pip"):            // /pip?id=<deviceID> 或 /pip?on=1 全部非主摄设备入 PIP
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }

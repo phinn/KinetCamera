@@ -29,7 +29,24 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var authorizationDenied = false
 
     // MARK: - 主摄管线
-    let session = AVCaptureSession()
+    // iOS:AVCaptureMultiCamSession(前后双摄/多摄并发,iPhone XS+;多摄能力运行时探测)
+    // macOS:AVCaptureSession(单主摄 + PIP 子会话)
+    let session: AVCaptureSession = {
+        #if os(iOS)
+        if AVCaptureMultiCamSession.isMultiCamSupported {
+            return AVCaptureMultiCamSession()
+        }
+        #endif
+        return AVCaptureSession()
+    }()
+    /// iOS 多摄会话可用(MultiCamSession 已建):PIP 辅摄与主摄真正并发
+    var isMultiCamActive: Bool {
+        #if os(iOS)
+        return session is AVCaptureMultiCamSession
+        #else
+        return false
+        #endif
+    }
     private let sessionQueue = DispatchQueue(label: "com.kinet.camera.session")
     private let videoDataOutput = AVCaptureVideoDataOutput()
     private let audioDataOutput = AVCaptureAudioDataOutput()
@@ -756,18 +773,8 @@ extension CameraManager {
         FilterPipeline.shared.renderContext.createCGImage(image, from: image.extent)
     }
 
-    /// 跨平台落盘:CIImage → PNG(macOS→~/Pictures,iOS→Documents)
-    @discardableResult
-    static func savePNG(image: CIImage) -> URL? {
-        guard let cg = ciToCGImage(image) else { return nil }
-        return savePNG(cg: cg)
-    }
-
     /// 拍照落盘(JPEG+完整EXIF)。EXIF 写进 JPEG 容器,CGImageSource 直读;
-    /// 同一时间戳再落一张无损 PNG(用户定的保底交付,不被 EXIF 需求牺牲)。
-    /// - Parameters:
-    ///   - exif: kCGImagePropertyExifDictionary 键值(已含 DateTimeOriginal 等)
-    ///   - tiff: kCGImagePropertyTIFFDictionary(Make/Model/Software 必须 TIFF 域,EXIF 域会被读取器忽略)
+    /// 同一时间戳再落一张无损 PNG(保底交付,不被 EXIF 需求牺牲)。
     @discardableResult
     static func savePhoto(cg: CGImage, exif: [String: Any], tiff: [String: Any]) -> URL? {
         #if os(macOS)
@@ -786,7 +793,7 @@ extension CameraManager {
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(
             out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        var props: [CFString: Any] = [
+        let props: [CFString: Any] = [
             kCGImageDestinationLossyCompressionQuality: 0.95,
             kCGImagePropertyExifDictionary: exif,
             kCGImagePropertyTIFFDictionary: tiff,
@@ -824,8 +831,7 @@ extension CameraManager {
             exif[kCGImagePropertyExifExposureProgram as String] = 2   // Program AE(相机自动)
             exif[kCGImagePropertyExifWhiteBalance as String] = 0      // Auto WB
             #if os(iOS)
-            // macOS 平台墙:iso/exposureDuration/lensAperture 编译期 unavailable(见 TIMEBASE docs),
-            // Mac 侧 ISO/快门/光圈字段不写(宁缺勿假),iOS 侧写真值
+            // macOS 平台墙:iso/exposureDuration/lensAperture 编译期 unavailable,Mac 侧宁缺勿假
             if d.iso > 0 { exif[kCGImagePropertyExifISOSpeedRatings as String] = [Int(d.iso)] }
             if d.exposureDuration.seconds > 0, d.exposureDuration.seconds < 1 {
                 exif[kCGImagePropertyExifExposureTime as String] = d.exposureDuration.seconds
@@ -838,6 +844,7 @@ extension CameraManager {
         return (exif, tiff)
     }
 
+    /// 跨平台落盘:CIImage → PNG(macOS→~/Pictures,iOS→Documents)
     @discardableResult
     static func savePNG(cg: CGImage) -> URL? {
         #if os(macOS)

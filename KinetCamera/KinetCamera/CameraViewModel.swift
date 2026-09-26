@@ -31,6 +31,10 @@ final class CameraViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// 主预览帧计数(automation 需要读)
     var frameCount = 0
+    /// 处理后帧率滑动窗口(最近1s时间戳),handleFrame 每帧 push,/status 读 count
+    fileprivate var fpsWindow: [CFTimeInterval] = []
+    /// 美颜/AI处理后实时fps(最近1s滑动窗口)
+    var processedFps: Int { fpsWindow.count }
 
     init() {
         // 恢复持久化的档位开关(缺省项默认 true:新增档位自动启用)
@@ -89,6 +93,10 @@ final class CameraViewModel: ObservableObject {
         // 拍照/回溯/连拍落盘仍走各自显式的 .photo 全画质链(170/245/335 行),互不影响。
         let filtered = pipeline.apply(raw, settings: settings, time: .zero, quality: .video)
         frameCount &+= 1
+        // 实时处理帧率(美颜链后):滑动窗口,最近 1s 计数,给 /status 美颜 fps 验收
+        fpsWindow.append(CFAbsoluteTimeGetCurrent())
+        let cutoff = CFAbsoluteTimeGetCurrent() - 1.0
+        while let first = fpsWindow.first, first < cutoff { fpsWindow.removeFirst() }
         let view = renderView
         DispatchQueue.main.async {
             view?.inputCIImage = filtered
@@ -302,7 +310,8 @@ final class CameraViewModel: ObservableObject {
             }
             let hdrCI = CIImage(cgImage: hdrCG)
             let analysis = AIAnalyzer.analyze(hdrCI, context: ctx)
-            let url = CameraManager.savePNG(image: hdrCI)
+            let meta = CameraManager.captureMetadata(device: manager.devices.first { $0.uniqueID == manager.activeDeviceID })
+            let url = CameraManager.savePhoto(cg: hdrCG, exif: meta.exif, tiff: meta.tiff)
             let report = CaptureReport(
                 beforeBlur: 0, beforeExposure: 0,
                 afterBlur: analysis.blurScore, afterExposure: analysis.exposureScore,
@@ -337,7 +346,11 @@ final class CameraViewModel: ObservableObject {
             final = fixed
             applied += fixes
         }
-        let url = CameraManager.savePNG(image: final)
+        let meta = CameraManager.captureMetadata(device: manager.devices.first { $0.uniqueID == manager.activeDeviceID })
+        var url: URL?
+        if let cgFinal = ctx.createCGImage(final, from: final.extent) {
+            url = CameraManager.savePhoto(cg: cgFinal, exif: meta.exif, tiff: meta.tiff)
+        }
         let after = AIAnalyzer.rescore(final, context: ctx)
         let report = CaptureReport(
             beforeBlur: (analysis.blurScore * 10).rounded() / 10,
@@ -372,13 +385,16 @@ final class CameraViewModel: ObservableObject {
         let pipeline = self.pipeline
         // 帧环取最近 30 帧,每 3 帧一张 = 10 张连拍
         let frames = manager.recentFrames(30) ?? []
+        let activeDev = manager.devices.first { $0.uniqueID == manager.activeDeviceID }
         Task.detached(priority: .userInitiated) { [weak self] in
             let ctx = pipeline.renderContext
             var scored: [(url: URL, blur: Double)] = []
             for (idx, f) in frames.enumerated() where idx % 3 == 0 {
                 let img = pipeline.apply(f.image, settings: s, time: .zero)
-                guard let url = CameraManager.savePNG(image: img) else { continue }
+                guard let cg = ctx.createCGImage(img, from: img.extent) else { continue }
                 let blur = AIAnalyzer.analyze(img, context: ctx).blurScore
+                let meta = CameraManager.captureMetadata(device: activeDev)
+                guard let url = CameraManager.savePhoto(cg: cg, exif: meta.exif, tiff: meta.tiff) else { continue }
                 scored.append((url, blur))
             }
             let best = scored.max(by: { $0.blur < $1.blur })

@@ -1,0 +1,78 @@
+{
+ "dark2": {
+  "input": "/Users/phinn/Pictures/KinetCamera/KinetCamera-20260926-183336-450.png",
+  "force": "dark2",
+  "tiltDetected": 0.0,
+  "fisheyeHint": 0.0,
+  "before": {
+   "cast": -5.1,
+   "exp": -0.5,
+   "lum": 68.3,
+   "blur": 100.0
+  },
+  "after": {
+   "cast": -3.2,
+   "exp": -0.2,
+   "lum": 107.4,
+   "blur": 100.0
+  },
+  "applied": "暗光增强(亮度+降噪+对比),二次白平衡(-19)"
+ },
+ "tilt6": {
+  "input": "/Users/phinn/Pictures/KinetCamera/KinetCamera-20260926-183336-450.png",
+  "force": "tilt6",
+  "tiltDetected": 6.0,
+  "fisheyeHint": 0.0,
+  "before": {
+   "cast": -13.9,
+   "exp": 0.1,
+   "lum": 145.7,
+   "blur": 100.0
+  },
+  "after": {
+   "cast": 0.5,
+   "exp": 0.2,
+   "lum": 153.4,
+   "blur": 100.0
+  },
+  "applied": "AI去冷(-13),水平校正(6°),二次白平衡(-11)"
+ },
+ "fisheye": {
+  "input": "/Users/phinn/Pictures/KinetCamera/KinetCamera-20260926-183336-450.png",
+  "force": "fisheye",
+  "tiltDetected": 0.0,
+  "fisheyeHint": 0.9,
+  "before": {
+   "cast": -9.6,
+   "exp": -0.1,
+   "lum": 120.3,
+   "blur": 100.0
+  },
+  "after": {
+   "cast": -3.7,
+   "exp": 0.2,
+   "lum": 158.3,
+   "blur": 100.0
+  },
+  "applied": "轻提亮+0.35EV,AI去冷(-9),广角畸变校正"
+ },
+ "none": {
+  "input": "/Users/phinn/Pictures/KinetCamera/KinetCamera-20260926-183336-450.png",
+  "force": "none",
+  "tiltDetected": 0.0,
+  "fisheyeHint": 0.0,
+  "before": {
+   "cast": -9.7,
+   "exp": 0.1,
+   "lum": 141.6,
+   "blur": 100.0
+  },
+  "after": {
+   "cast": -4.1,
+   "exp": 0.1,
+   "lum": 142.0,
+   "blur": 100.0
+  },
+  "applied": "AI去冷(-9)"
+ }
+}

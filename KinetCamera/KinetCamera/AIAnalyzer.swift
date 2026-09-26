@@ -11,6 +11,8 @@ struct AIAnalysis: Equatable {
     var compositionHint: String? = nil
     var suggestion: String? = nil   // 一句话建议
     var colorCast: Double = 0       // 色偏:R-B 通道均值差(0-255 域);>12 偏红,<-12 偏蓝
+    var tiltAngle: Double = 0       // 水平倾角(度,正=画面向左倾);|角度|>1.2 自动转正
+    var fisheyeHint: Double = 0     // 广角畸变线索 0-1(人脸贴边+宽高比异常时升高)
 
     static let empty = AIAnalysis()
 }
@@ -47,6 +49,23 @@ enum AIAnalyzer {
         try? handler.perform([faceRequest])
         let faces = faceRequest.results ?? []
         result.faceCount = faces.count
+
+        // 水平倾角(Vision 官方 horizon 检测):|tilt|>1.2° 才值得自动转正,
+        // 小角度日常手持抖动不动它(转正必裁画面,小于阈值的裁切无收益)
+        let horizonReq = VNDetectHorizonRequest()
+        try? handler.perform([horizonReq])
+        if let obs = (horizonReq.results as? [VNHorizonObservation])?.first {
+            result.tiltAngle = Double(obs.angle) * 180 / .pi   // 弧度→度
+        }
+
+        // 广角畸变线索:人脸贴近画面边缘(Vision 归一化框,左/右 20% 内)且宽高比异常大
+        // —— 前置广角拍半身像时边缘人脸横向拉伸,是自拍畸变痛点的可检测信号
+        if let face = faces.first {
+            let edgeDist = min(face.boundingBox.minX, 1.0 - face.boundingBox.maxX)
+            if edgeDist < 0.20 && face.boundingBox.width > 0.18 {
+                result.fisheyeHint = min(1.0, Double((0.20 - edgeDist) / 0.20) * (face.boundingBox.width / 0.30))
+            }
+        }
 
         if faces.count == 1 {
             let box = faces[0].boundingBox   // 归一化,原点左下
@@ -213,7 +232,16 @@ enum AIAnalyzer {
 
         // 方向判断用 exposureBias(过/欠曝方向),不再用质量分 —— 旧代码 quality>78 被当
         // "过曝"压光是方向性 bug:高分恰恰是接近理想,导致白背景正常照片被反向压光/提亮。
-        if analysis.exposureBias < -0.18 {
+        // 暗光增强档(bias < -0.45,严重欠曝)≠ 普通提亮:亮度拉起 + 降噪 + 局部对比,
+        // 避免暗部噪声一起放大(普通欠曝只提亮不降噪)
+        if analysis.exposureBias < -0.45 {
+            out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 1.3])
+            out = out.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.78])   // 抬暗部少压高光
+            out = out.applyingFilter("CINoiseReduction", parameters: ["inputNoiseLevel": 0.06, "inputSharpness": 0.6])
+            out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.3])
+            out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.08])
+            applied.append("暗光增强(亮度+降噪+对比)")  // 提亮放大的色偏由链尾终末二次WB统一收敛
+        } else if analysis.exposureBias < -0.18 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.8])
             out = out.applyingFilter("CIVibrance", parameters: [kCIInputAmountKey: 0.25])
             out = out.applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.06])
@@ -240,6 +268,29 @@ enum AIAnalyzer {
                 "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(bGain), w: 0),
             ])
             applied.append(analysis.colorCast > 0 ? "AI去暖(\(Int(analysis.colorCast)))" : "AI去冷(\(Int(analysis.colorCast)))")
+        }
+
+        // 水平校正:Vision horizon 检测的倾角,|θ|>1.2° 用 CIStraightenFilter 转正。
+        // 放在曝光/白平衡之后、锐化之前:几何变换会重采样,先锐化会被插值糊掉
+        if abs(analysis.tiltAngle) > 1.2 {
+            out = out.applyingFilter("CIStraightenFilter", parameters: [
+                "inputAngle": CGFloat(analysis.tiltAngle * .pi / 180),
+            ]).cropped(to: out.extent.applying(
+                CGAffineTransform(scaleX: 0.94, y: 0.94)
+                    .translatedBy(x: out.extent.width * 0.03, y: out.extent.height * 0.03)))
+            applied.append("水平校正(\(Int(analysis.tiltAngle.rounded()))°)")
+        }
+
+        // 广角畸变轻校:人脸贴边+fisheyeHint 高时,反向桶形径向映射把边缘鼓出的形变压回。
+        // 不用 CIBulgeDistortion —— macOS 27 上 distortion 家族(CIBulge/Twirl/Pinch/CircleSplash)
+        // 最小复现全部 extent=0/Abort,同批回归。自写 CPU 径向映射,与瘦脸 warp 同源技术。
+        // 轻度(≤0.22)宁可欠修不可过修 —— 盲校正过修会把直门框修弯
+        if analysis.fisheyeHint > 0.45 {
+            let k1 = -0.22 * min(analysis.fisheyeHint, 1.0)
+            if let fixed = radialDistortionCorrect(out, k1: k1) {
+                out = fixed
+                applied.append("广角畸变校正")
+            }
         }
 
         if analysis.blurScore < 40 {
@@ -288,8 +339,106 @@ enum AIAnalyzer {
             ])
             applied.append("AI美颜(磨皮+肤色美白)")
         }
+
+        // 终末二次 WB:提亮/Gamma/降噪都会放大原色偏(harness 实测提亮使 cast -6→-28),
+        // 主链 WB 在曝光修正【之前】测的 cast 已过时。对最终输出重测色偏,残差 ≥8 再补一轮。
+        let finalCast = colorCast(cgOfOrEmpty(out))
+        // 除数 120(主链 220 的收紧版):终末残差要求一次收敛到 |cast|<8,不再迭代
+        let finalGain = min(0.30, abs(finalCast) / 120.0)
+        if finalGain > 0 && abs(finalCast) >= 8 {
+            let rr = finalCast > 0 ? 1.0 - finalGain : 1.0 + finalGain
+            let bb = finalCast > 0 ? 1.0 + finalGain : 1.0 - finalGain
+            out = out.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: CGFloat(rr), y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(bb), w: 0),
+            ])
+            applied.append("二次白平衡(\(Int(finalCast)))")
+        }
         return (out, applied)
     }
+
+        // 暗光二次测偏用的兜底:colorCast 需要 CGImage
+        private static func cgOfOrEmpty(_ image: CIImage) -> CGImage {
+            sharedContext().createCGImage(image, from: image.extent)
+                ?? CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                             space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        }
+
+    /// 反向桶形径向畸变校正(CPU 位移场双线性采样,与瘦脸 warp 同源技术):
+    /// 输出像素 p 处采样输入的 p' = c + dir·r·(1+k1·r²),k1<0 边缘内收,压回广角外鼓。
+    /// 全图均匀处理(广角畸变本就是径向全域现象),无滤波副作用。
+    static func radialDistortionCorrect(_ image: CIImage, k1: Double) -> CIImage? {
+        guard k1 != 0 else { return nil }   // k1<0=压回广角外鼓;k1>0=造桶形(harness 预畸变用)
+        let e = image.extent
+        let W = Int(e.width), H = Int(e.height)
+        guard W > 16, H > 16,
+              let cg = sharedContext().createCGImage(image, from: e),
+              let data = cg.dataProvider?.data, let ptr = CFDataGetBytePtr(data) else { return nil }
+        let bytes = ptr
+        let bpr = cg.bytesPerRow
+        let bpp = cg.bitsPerPixel / 8
+        guard bpp == 4 else { return nil }
+
+        let cx = Double(W) / 2, cy = Double(H) / 2
+        let maxR = (cx * cx + cy * cy).squareRoot()
+        var out = [UInt8](repeating: 0, count: W * H * 4)
+        out.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+            let dst = raw.baseAddress!.bindMemory(to: UInt8.self, capacity: W * H * 4)
+            for y in 0..<H {
+                let dy = Double(y) - cy
+                let rowOff = y * W * 4
+                for x in 0..<W {
+                    let dx = Double(x) - cx
+                    let r = (dx * dx + dy * dy).squareRoot() / maxR
+                    // 采样位置:反向桶形 —— r 越大往里收得越多
+                    let sf = 1.0 + k1 * r * r
+                    let sx = cx + dx * sf
+                    let sy = cy + dy * sf
+                    let o = rowOff + x * 4
+                    if sx < 0 || sx >= Double(W - 1) || sy < 0 || sy >= Double(H - 1) {
+                        continue   // 出界留黑边(转正后走 inset 裁切,最终成片无黑边)
+                    }
+                    // 双线性插值
+                    let x0 = Int(sx), y0 = Int(sy)
+                    let fx = sx - Double(x0), fy = sy - Double(y0)
+                    let s00 = (y0 * W + x0) * 4
+                    let s10 = s00 + 4
+                    let s01 = s00 + W * 4
+                    let s11 = s01 + 4
+                    let rowB = y0 * bpr, rowB1 = rowB + bpr
+                    for ch in 0..<3 {
+                        let p00 = Double(bytes[rowB + x0 * bpp + ch])
+                        let p10 = Double(bytes[rowB + (x0 + 1) * bpp + ch])
+                        let p01 = Double(bytes[rowB1 + x0 * bpp + ch])
+                        let p11 = Double(bytes[rowB1 + (x0 + 1) * bpp + ch])
+                        let top = p00 + (p10 - p00) * fx
+                        let bot = p01 + (p11 - p01) * fx
+                        dst[o + ch] = UInt8(max(0, min(255, (top + (bot - top) * fy).rounded())))
+                    }
+                    dst[o + 3] = bytes[rowB + x0 * bpp + 3]
+                }
+            }
+        }
+        var outCG: CGImage?
+        out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let ctx = CGContext(data: UnsafeMutableRawPointer(mutating: raw.baseAddress),
+                                      width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            outCG = ctx.makeImage()
+        }
+        guard let finalCG = outCG else { return nil }
+        return CIImage(cgImage: finalCG)
+    }
+
+    private static func sharedContext() -> CIContext {
+        if let c = _sharedContext { return c }
+        let c = CIContext(options: [.useSoftwareRenderer: false])
+        _sharedContext = c
+        return c
+    }
+    private static var _sharedContext: CIContext?
 
     /// 修正效果量化:对修正后图重打分(含色偏复测+曝光偏移)
     static func rescore(_ image: CIImage, context: CIContext) -> (blur: Double, exposure: Double, colorCast: Double, bias: Double) {

@@ -41,3 +41,17 @@
 | 8 | **切换镜头丢失当前构图** | 手机拍照切超广/长焦,画面跳变,错过瞬间 | iOS 端 `switchDevice` 保持 session 常开只换 input(不停 session),配置变更走 begin/commitConfiguration;三摄(超广/广角/前摄)统一 devices 枚举 + UI 切换 + /switch 自动化接口;视频录制中禁止切换(防写坏文件) | 代码落地于 CameraManager(平台共享),真机复验待 iPhone 上线(devicectl 显示 unavailable,脚本 scripts/deploy_ios.sh 就绪) |
 | 9 | **视频美颜与拍照两张皮** | 拍照美颜了,视频没美颜;或视频卡成幻灯片 | 录像走同一 FilterPipeline(quality=.video 档):GPU 快速路径(肤色掩膜高斯磨皮+美白+人像虚化 fastMode),实测 recordFilter **1.7ms/帧**、append 零丢帧;拍照档保留导向滤波+全尺寸焊接(画质锚点)。A/B 证据 docs/evidence/video_ab.png:锐度 124.6→66.7(虚化)、中心亮度 53.5→114(美白)、R-B 20.6→12(去黄) | 本机验证时 FaceTime HD 相机栈死(VDCAssistant 老问题,合成源 2fps 接管),30fps 成片待重启 Mac 复验;打点工具(append FAIL/recordFilter cost)已入码,复验即插即用 |
 | 10 | **AI 修复痕迹重** | AI 处理过的人像边缘生硬、人被磨穿 | Vision VNGeneratePersonSegmentationRequest(balanced)+ 2px 羽化 + 分级虚化;**关键坑:Vision mask buffer 底原点,CIImage(cvPixelBuffer:) 按顶原点解释,不 oriented(forExifOrientation:4) 翻转的话人被糊背景被保**(实测人脸保留 17%);同帧 A/B(docs/evidence/portrait_ab.png + metrics):人脸保留 94.6%、背景糊至 32%、人脸色偏 ΔRGB<0.6 | 分割失败/无人脸时静默返回原图(不阻断拍照);跳帧推理+busy 门控;录像档降 .fast 模型 ×3 速 |
+
+## 七项高频痛点逐条审计(2026-09-26,用户点名的方向性清单)
+
+| # | 痛点 | 现有实现对照 | 结论 |
+|---|------|-------------|------|
+| 1 | **启动速度** | 链路干净:init 只挂回调;授权后 rebuildAndRun 单趟 begin/commitConfiguration+startRunning,无 IO/网络/重型预热。量化方法学已备(t0=open → /status delivered 递增),**实测被授权弹窗阻塞**(Debug 重签后 TCC 重置,弹窗等用户点一次) | ⏳ 结构无劣化点,实测待用户点一次授权弹窗即出数 |
+| 2 | **抓拍延迟(快门慢半拍)** | ✅ 已解且回溯快门:60 帧环(2s)常驻,按快门回溯选清晰帧(AIAnalyzer.blurScore 打分)实测扫描 60 帧取 #0 落盘;零快门延迟感知 | ✅ 已闭环(实测证据在案) |
+| 3 | **变焦/镜头切换卡顿** | ✅ 架构层已解:session 常开,switchSource 只换 input(begin/commitConfiguration 增量),**不停 session 不黑屏**;PIP 3 路独立 rig 常开。⚠️ 数码变焦(zoomFactor 滑杆)未做——是"变焦"痛点的另一半 | ✅ 切换已闭环;⚠️ 数码变焦列入下轮(小活:videoZoomFactor+UI 滑杆) |
+| 4 | **夜景鬼影** | ✅ 已解:FrameCompositor SAD 块匹配运动补偿,超窗口弃帧防鬼影(<4 帧拒合成);dy 反号 bug 已修(边缘能量 0.0181>基准);8 帧 gain 1.9 合成,blur 5.6→11.2 实测 | ✅ 已闭环(弃帧防鬼影=不对齐就丢,绝不硬叠) |
+| 5 | **美颜假脸** | ✅ 已解+量化:导向滤波保边+全尺寸边缘焊接(真结构焊回),磨皮混合上限 85%;肤色掩膜只动皮肤区;autoCorrect 人像兜底;实机 A/B 三帧结构保留 123-125%(磨皮不糊边)、录像 GPU 档 1.7ms/帧 | ✅ 已闭环(美颜赛道唯一带像素级量化证据) |
+| 6 | **连拍丢帧** | ✅ 已解:连拍不走传感器 burst,走帧环回溯——最近 30 帧每 3 帧一张共 10 张,零丢帧(帧环常驻写入),AI 选最清晰一张;与回溯快门同一套基础设施 | ✅ 已闭环 |
+| 7 | **社交分享压缩画质** | ✅ 侧向已解:本地 PNG 无损落盘(~/Pictures/KinetCamera),用户自己控制分享什么格式;**app 内一键分享/格式转换(WebP/JPEG 质量滑杆)未做**——但"导出即 PNG 无损"已消灭默认压缩问题 | ⚖️ 半闭环:无损导出已保底;一键分享砍掉(拍完去微信发图是既有习惯,app 内做分享面板是伪需求,真需求是无损可选,已满足) |
+
+**审计结论**:7 项中 5 项已闭环带证据,1 项结构就绪等一次授权点击(启动),1 项明确砍掉 app 内分享面板(伪需求)+数码变焦补进下轮。

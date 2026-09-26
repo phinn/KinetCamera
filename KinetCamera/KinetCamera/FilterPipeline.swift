@@ -94,7 +94,7 @@ final class FilterPipeline {
                 // 半径 cap:同质区需 ≥2r 才不被边界泄漏污染(小域最窄特征/16 为安全上限)
                 let rawRadius = Int(Double(min(sw, sh)) * (0.02 + smoothing * 0.03))
                 let radius = max(4, min(12, rawRadius, min(sw, sh) / 16))
-                let eps = Float(0.04 - smoothing * 0.025)
+                let eps = Float(0.10)
                 let g = GuidedFilter.apply(rgba: bytes, width: sw, height: sh, radius: radius, eps: eps)
                 // ---- CPU pass 2:YCbCr 肤色掩膜(浮点,免色彩空间坑) ----
                 let n = sw * sh
@@ -138,23 +138,58 @@ final class FilterPipeline {
                         outB[i] = UInt8(max(0, min(255, b + 0.05 * lift * b + 6 * lift)))
                     }
                 }
+                // ---- CPU pass 4:软阈值高频回注(保发丝、压毛孔) ----
+                // 全带回注会把毛孔噪声原样带回;按局部幅度区分:
+                // 发丝/睫毛级(|hf|大)→ 权重趋近 k 全额回;毛孔噪声(|hf|小)→ 权重趋 0 压掉。
+                if smoothing > 0 {
+                    // 边缘感知混合(不是"回注"):|hf| 大 = 真实结构(发丝/眉眼/轮廓)→ 取原图;
+                    // |hf| 小 = 毛孔噪声 → 取磨皮值。|hf|=guided 与原图的差,即被磨掉的部分。
+                    let t: Float = 16.0
+                    var outs: [[UInt8]] = [outR, outG, outB]
+                    for i in 0..<n {
+                        for c in 0..<3 {
+                            let o = Float(bytes[i*4+c])
+                            let gi = Float(outs[c][i])
+                            let wEdge = min(Float(1), abs(o - gi) / t)
+                            outs[c][i] = UInt8(max(0, min(255, gi + wEdge * (o - gi))))
+                        }
+                    }
+                    outR = outs[0]; outG = outs[1]; outB = outs[2]
+                }
                 if let smoothCG = GuidedFilter.cgImage(r: outR, g: outG, b: outB, w: sw, h: sh) {
                     let smoothBig = CIImage(cgImage: smoothCG)
                         .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: 1.0 / scale])
                         .cropped(to: input.extent)
-                    if smoothing > 0 {
-                        // 原片高频回注(磨皮不磨纹理):原图 - 原图高斯 = 高频层,按 0.35 权重加回
-                        let highFreq = input.clampedToExtent()
-                            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 6])
-                            .cropped(to: input.extent)
-                        let k = 0.5 * smoothing
-                        let textureBack = input.applyingFilter("CISubtractBlendMode", parameters: [kCIInputBackgroundImageKey: highFreq])
-                            .applyingFilter("CIColorMatrix", parameters: [
-                                "inputRVector": CIVector(x: CGFloat(k), y: 0, z: 0, w: 0),
-                                "inputGVector": CIVector(x: 0, y: CGFloat(k), z: 0, w: 0),
-                                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(k), w: 0),
-                            ])
-                        image = smoothBig.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: textureBack])
+                    // ---- pass 4'(全尺寸):边缘感知焊接 ----
+                    // 小域降采样已把真实边界(眉眼/发丝,落差数十级)糊成坡道,小域内保边无意义。
+                    // 升采样后以全尺寸原图为参照再混一次:|hf|大(真结构)→ 焊回原图;|hf|小(毛孔)→ 保留磨皮。
+                    // ---- pass 4'(全尺寸):边缘感知焊接 ----
+                    // 小域降采样已把真实边界糊成坡道,小域内保边无意义;升采样后以全尺寸原图
+                    // 为参照再混一次:|hf|大(真结构)→ 焊回原图;|hf|小(毛孔)→ 保留磨皮。
+                    if let upCG = renderContext.createCGImage(smoothBig, from: input.extent),
+                       let (upBytes, uw, uh) = GuidedFilter.rgba(of: upCG), uw == Int(input.extent.width),
+                       // 全尺寸原帧作参照:小域 bytes 的边界已被降采样糊化,不能当结构依据
+                       let fullCG = renderContext.createCGImage(input, from: input.extent),
+                       let (fullBytes, fw, fh) = GuidedFilter.rgba(of: fullCG), fw == uw {
+                        let t: Float = 16.0
+                        var fin = [UInt8](repeating: 0, count: uw * uh * 4)
+                        for i in 0..<(uw * uh) {
+                            let i4 = i * 4
+                            let oR = Float(fullBytes[i4]), oG = Float(fullBytes[i4+1]), oB = Float(fullBytes[i4+2])
+                            let gR = Float(upBytes[i4]), gG = Float(upBytes[i4+1]), gB = Float(upBytes[i4+2])
+                            // 跨通道取 |hf| 最大者作边缘置信度(避免单通道偶然抵消)
+                            let m = max(abs(oR-gR), abs(oG-gG), abs(oB-gB))
+                            let wE = min(Float(1), m / t)
+                            fin[i4]   = UInt8(max(0, min(255, gR + wE * (oR - gR))))
+                            fin[i4+1] = UInt8(max(0, min(255, gG + wE * (oG - gG))))
+                            fin[i4+2] = UInt8(max(0, min(255, gB + wE * (oB - gB))))
+                            fin[i4+3] = 255
+                        }
+                        if let finCG = GuidedFilter.cgImageRGBA(fin, w: uw, h: uh) {
+                            image = CIImage(cgImage: finCG)
+                        } else {
+                            image = smoothBig
+                        }
                     } else {
                         image = smoothBig
                     }

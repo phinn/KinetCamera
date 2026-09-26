@@ -111,7 +111,12 @@ enum GuidedFilter {
         for i in 0..<(w * h) {
             rgba[i*4] = r[i]; rgba[i*4+1] = g[i]; rgba[i*4+2] = b[i]
         }
-        return rgba.map { $0 }.withContiguousStorageIfAvailable { buf in
+        return cgImageRGBA(rgba, w: w, h: h)
+    }
+
+    /// RGBA 四通道(含 alpha)直接转 CGImage
+    static func cgImageRGBA(_ rgba: [UInt8], w: Int, h: Int) -> CGImage? {
+        rgba.withContiguousStorageIfAvailable { buf in
             CGContext(data: UnsafeMutableRawPointer(mutating: buf.baseAddress), width: w, height: h,
                       bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()

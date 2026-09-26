@@ -295,6 +295,128 @@ struct HUDView: View {
     }
 }
 
+// MARK: - Preview(三摄切换/变焦/录像状态的 UI 逻辑验证,mock 状态直灌 HUD)
+// manager 含 AVCaptureSession 无法注入 mock → HUD 依赖的读路径抽成协议,HUD 只吃协议。
+// Preview 用 mock 实现灌四种场景:三摄/录像中/无设备/变焦中。
+
+/// HUD 依赖的 manager 只读面(协议化,mock 可替身)
+protocol HUDManagerModel: ObservableObject {
+    var devices: [AVCaptureDevice] { get }
+    var activeDeviceID: String? { get }
+    var isSessionRunning: Bool { get }
+    var isRecording: Bool { get }
+    var recordingSeconds: Double { get }
+    var zoomFactor: Double { get }
+    var zoomIsHardware: Bool { get }
+    var isAELocked: Bool { get }
+}
+
+extension CameraManager: HUDManagerModel {}
+
+#Preview("HUD·三摄+变焦") {
+    let devices = MockCameraHUD.makeFakeDevices(count: 3)
+    return HUDPreviewHost(manager: MockCameraHUD(
+        devices: devices, active: devices[1].uniqueID,
+        zoom: 2.5, zoomHW: false, recording: false))
+        .frame(width: 720, height: 80)
+        .background(Color.black)
+}
+
+#Preview("HUD·录像中(变焦/切换禁用)") {
+    let devices = MockCameraHUD.makeFakeDevices(count: 2)
+    return HUDPreviewHost(manager: MockCameraHUD(
+        devices: devices, active: devices[0].uniqueID,
+        zoom: 1.0, zoomHW: true, recording: true, recordingSeconds: 63.4))
+        .frame(width: 720, height: 80)
+        .background(Color.black)
+}
+
+#Preview("HUD·无设备降级") {
+    HUDPreviewHost(manager: MockCameraHUD(devices: [], active: nil, zoom: 1, zoomHW: false, recording: false))
+        .frame(width: 720, height: 80)
+        .background(Color.black)
+}
+
+/// Preview 专用 mock:实现协议只读面;AVCaptureDevice 无法构造,用真实枚举兜底
+final class MockCameraHUD: HUDManagerModel {
+    @Published var devices: [AVCaptureDevice]
+    @Published var activeDeviceID: String?
+    @Published var isSessionRunning: Bool
+    @Published var isRecording: Bool
+    @Published var recordingSeconds: Double
+    @Published var zoomFactor: Double
+    @Published var zoomIsHardware: Bool
+    @Published var isAELocked: Bool
+
+    init(devices: [AVCaptureDevice], active: String?, zoom: Double, zoomHW: Bool,
+         recording: Bool, recordingSeconds: Double = 0) {
+        self.devices = devices
+        self.activeDeviceID = active
+        self.isSessionRunning = !devices.isEmpty
+        self.isRecording = recording
+        self.recordingSeconds = recordingSeconds
+        self.zoomFactor = zoom
+        self.zoomIsHardware = zoomHW
+        self.isAELocked = false
+    }
+
+    /// Preview 设备假数据源:枚举系统真实设备(Preview 进程能跑 AVFoundation 枚举),
+    /// 数量不足则复用现有设备补齐 —— 保持在 Preview 沙盒里零硬件写操作。
+    static func makeFakeDevices(count: Int) -> [AVCaptureDevice] {
+        let real = AVCaptureDevice.devices(for: .video)
+        guard !real.isEmpty else { return [] }
+        var out = real
+        while out.count < count { out.append(real[out.count % real.count]) }
+        return Array(out.prefix(count))
+    }
+}
+
+/// HUD 直连 mock manager 的宿主(HUDView 本身吃 CameraViewModel,
+/// Preview 用 mock manager 构造一个只展示状态的轻量宿主,绕开真会话)
+struct HUDPreviewHost: View {
+    @ObservedObject var manager: MockCameraHUD
+
+    var body: some View {
+        HStack(spacing: 24) {
+            Menu {
+                ForEach(manager.devices, id: \.uniqueID) { dev in
+                    Button(dev.localizedName) {}
+                }
+            } label: {
+                Label(manager.devices.first { $0.uniqueID == manager.activeDeviceID }?.localizedName ?? "选择摄像头",
+                      systemImage: "camera.on.rectangle")
+            }
+            .frame(width: 170)
+            .disabled(manager.isRecording)   // 录像中切换禁用(与 DevicePolicy 守卫一致)
+
+            Spacer()
+
+            if manager.isRecording {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.red).frame(width: 10, height: 10)
+                    Text(String(format: "%02d:%02d", Int(manager.recordingSeconds) / 60, Int(manager.recordingSeconds) % 60))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.red)
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 16) {
+                Image(systemName: "minus.magnifyingglass")
+                Text(String(format: "%.1fx", manager.zoomFactor))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(manager.zoomIsHardware ? .green : .orange)
+                Image(systemName: "plus.magnifyingglass")
+                Text(manager.zoomIsHardware ? "硬件" : "软件")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            .opacity(manager.isRecording ? 0.4 : 1.0)
+        }
+        .padding(.horizontal, 24)
+    }
+}
+
 // MARK: - 右侧面板
 struct SidePanelView: View {
     @ObservedObject var vm: CameraViewModel
@@ -324,8 +446,9 @@ struct SidePanelView: View {
                             Divider()
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("最近成片修正报告").font(.caption.weight(.semibold))
-                                Text(String(format: "清晰度 %.0f → %.0f  曝光 %.0f → %.0f",
-                                            r.beforeBlur, r.afterBlur, r.beforeExposure, r.afterExposure))
+                                Text(String(format: "清晰度 %.0f → %.0f  曝光 %.0f → %.0f  色偏 %+.0f → %+.0f",
+                                            r.beforeBlur, r.afterBlur, r.beforeExposure, r.afterExposure,
+                                            r.beforeColorCast, r.afterColorCast))
                                     .font(.caption2.monospacedDigit())
                                     .foregroundColor(r.improved ? .green : .secondary)
                                 if !r.applied.isEmpty {
@@ -367,6 +490,22 @@ struct SidePanelView: View {
                     VStack(spacing: 10) {
                         slider("人像虚化", $vm.settings.backgroundBlur)
                         slider("暗角", $vm.settings.vignette)
+                        HStack {
+                            Text("变焦").font(.caption).frame(width: 56, alignment: .leading)
+                            Slider(value: Binding(
+                                get: { vm.zoom },
+                                set: { vm.setZoom($0) }), in: 1...8)
+                            Text(String(format: "%.1fx", vm.zoom))
+                                .font(.caption.monospacedDigit()).frame(width: 38)
+                        }
+                        HStack {
+                            Text(vm.zoomIsHardware ? "硬件变焦" : "软件裁切")
+                                .font(.caption2).foregroundColor(.secondary)
+                            Spacer()
+                            Button("1x") { vm.setZoom(1.0) }
+                                .font(.caption)
+                                .disabled(vm.zoom == 1.0)
+                        }
                         Toggle("三分线网格", isOn: $vm.showGrid)
                             .font(.caption)
                     }

@@ -6,3 +6,4 @@ DerivedData/
 xcuserdata/
 .swiftpm
 __pycache__/
+default.profraw

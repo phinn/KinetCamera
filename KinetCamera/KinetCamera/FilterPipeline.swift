@@ -329,18 +329,10 @@ final class FilterPipeline {
             }
         }
 
-        // 3) 美白已在上面美颜 pass 内做(肤色掩膜增益);此段保留旧全局路径仅供 w>0 且磨皮小域失败时
-        //    —— 实际上已并入 pass3,这里直接跳过(留空防误开)
-        if settings.whitening > 0 && settings.smoothing == 0 {
-            // 无磨皮时仍走 CPU 掩膜路径:复用上面的美颜块不现实,退化全局轻处理(软,无掩膜)
-            // 注:预览默认两者联动开,此分支只出现在单独拉美白滑杆的极端情况
-            let w = settings.whitening
-            image = image.applyingFilter("CIColorControls", parameters: [
-                kCIInputBrightnessKey: w * 0.05,
-                kCIInputContrastKey: 1.0 - w * 0.03,
-                kCIInputSaturationKey: 1.0 - w * 0.06,
-            ])
-        }
+        // 3) 美白已在上面美颜 pass 内做(肤色掩膜增益,单开美白同样走 CPU pass —— 180 行分支条件
+        //    本就是 smoothing>0 || whitening>0)。旧全局 CIColorControls 退化分支已删除:
+        //    它在 CPU pass 之后叠加执行造成双重美白,且无掩膜污染背景(实测单开美白背景墙 +8.4 亮度),
+        //    contrast 线性域还与 AIAnalyzer 踩的同族坑相邻(09-26 复查)。
 
         // 4) 提亮(曝光+高光抬升,肤色不炸)
         if settings.brightening > 0 {
@@ -434,12 +426,23 @@ final class FilterPipeline {
 
     /// 检测最大人脸框(像素域,CI 坐标原点左下)。同帧 extent 不变时复用,避免每帧跑 Vision。
     func cachedFaceRect(of image: CIImage) -> CGRect? {
-        if let c = cachedFace, c.extent == image.extent { return c.rect }
+        if let c = cachedFace, c.extent == image.extent {
+            // 坑:0脸时缓存 CGRect.null —— 缓存命中直接返回会把 null 框(非nil)漏给下游,
+            // 瘦脸/五官锚定全走 guard 失败静默失效(实测 slim 输出与 before 逐字节相同)。
+            return c.rect.isNull ? nil : c.rect
+        }
         guard let cg = renderContext.createCGImage(image, from: image.extent) else { return nil }
         let req = VNDetectFaceLandmarksRequest()
         let handler = VNImageRequestHandler(cgImage: cg, options: [:])
         try? handler.perform([req])
         guard let face = (req.results ?? []).max(by: { $0.boundingBox.width < $1.boundingBox.width }) else {
+            cachedFace = (CGRect.null, image.extent)
+            return nil
+        }
+        // 坑:某些合成/低质图上 Vision 返回 inf/NaN bbox(实测合成肤色样张 bbox=(inf,inf,0,0)),
+        // 乘 extent 后仍是 inf 框,非 nil 地漏给下游瘦脸/五官锚定,全部 guard 失败静默失效。
+        if face.boundingBox.width.isNaN || face.boundingBox.width.isInfinite || face.boundingBox.width <= 0
+            || face.boundingBox.height.isNaN || face.boundingBox.height.isInfinite || face.boundingBox.height <= 0 {
             cachedFace = (CGRect.null, image.extent)
             return nil
         }

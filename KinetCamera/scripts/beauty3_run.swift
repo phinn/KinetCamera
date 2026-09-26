@@ -21,13 +21,17 @@ struct Main {
 
         func save(_ name: String, _ s: FilterSettings) {
             let out = pipeline.apply(input, settings: s, time: .zero, quality: .photo)
-            if let cg2 = pipeline.renderContext.createCGImage(out, from: out.extent) {
-                let rep = NSBitmapImageRep(cgImage: cg2)
-                if let data = rep.representation(using: .png, properties: [:]) {
-                    try? data.write(to: URL(fileURLWithPath: outDir + "/" + name + ".png"))
-                }
-            }
-            print("saved \(name)")
+            print("  apply→extent=\(out.extent)")
+            guard let cg2 = pipeline.renderContext.createCGImage(out, from: out.extent) else {
+                print("  FAIL: createCGImage nil"); return }
+            let rep = NSBitmapImageRep(cgImage: cg2)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                print("  FAIL: png rep nil"); return }
+            do {
+                let url = URL(fileURLWithPath: outDir + "/" + name + ".png")
+                try data.write(to: url)
+                print("  wrote \(url.path) bytes=\(data.count)")
+            } catch { print("  FAIL write: \(error)") }
         }
 
         var s0 = FilterSettings(sharpen: 0)

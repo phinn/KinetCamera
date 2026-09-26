@@ -87,3 +87,32 @@
   录像 7s h264 1080p30+aac 成片;双源并发 iPhone主摄+Mac内置PIP
 - **静音防线**:全零音轨环境实测,录制中 audioSilentWarning=true 实时触发,
   成片 audio.json {audioSilent:true, audioPeakDB:-200} 自动打标
+
+## 六、RAW/手动对焦平台墙定论(09-26 晚探针实锤,此线关闭)
+
+**探针**:scripts/cap_probe.swift(macOS 27 SDK,Xcode 27A266a 编译+运行)
+
+### 6.1 编译期 unavailable(编译器直接裁决,非运行时探测)
+```
+error: 'isLockingFocusWithCustomLensPositionSupported' is unavailable in macOS
+error: 'lensPosition' is unavailable in macOS
+error: 'lensPositionRange' is unavailable in macOS
+error: 'isVideoBinned' is unavailable in macOS
+error: 'lensAperture' is unavailable in macOS
+error: value of type 'AVCaptureDevice' has no member 'isRAWPhotoCaptureSupported'
+error: value of type 'AVCaptureDevice.Format' has no member 'supportedFocusModes'
+```
+
+### 6.2 运行时实测(内置摄 6C707041)
+| 探针项 | 结果 |
+|---|---|
+| focusMode 支持列表 | **空**(continuousAutoFocus/autoFocus/locked 全不支持) |
+| exposureMode 支持列表 | **空**(含 .custom,无手动 ISO/快门) |
+| photoOutput.availableRawPhotoPixelFormatTypes | **空**(RAW 输出不可用) |
+| isHighPhotoQualitySupported | false |
+
+### 6.3 结论
+- **手动对焦推拉**(lensPosition 0-1 无级):macOS 全平台无 API。唯一软件替代=focusMode .locked 锁焦——但内置摄连这个都不支持,现行实现(软件 AE 亮度闭环+对焦模式切换)已是 macOS 可用面上的上限
+- **RAW/DNG**:macOS 全平台无 capture RAW API(iOS AVCapturePhotoOutput.rawPhotoPixelFormatType 不可用)。无损路 = PNG(已落地,零画质损失)
+- **Continuity Camera 不豁免**:它是软件桥接虚拟设备,capability 面只会窄于物理设备;lensPosition unavailable 是 SDK 编译期裁决,与接什么设备无关。**此线关闭,不再复测**
+- Halide 四项优势定位:硬快门/手焦/RAW = iOS 专属 API(平台墙);胶片LUT = 十年调色资产(产品资产非 API 墙,列为 P2 可追:CIColorCube 自定义 LUT 导入)

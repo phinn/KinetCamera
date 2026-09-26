@@ -349,8 +349,32 @@ final class CameraViewModel: ObservableObject {
     func startRecording() {
         let s = settings
         let pipeline = self.pipeline
-        manager.recordFilter = s.isNeutral ? nil : { image, time in
-            pipeline.apply(image, settings: s, time: time, quality: .video)
+        // 录像开始时快照 PIP 帧(录像中 PIP 字典持续更新,这里取进入画面,与拍照同框语义一致)
+        let pipSnapshot = Array(pipFrames.values)
+        NSLog("[KinetCamera] startRecording: pipSnapshot=\(pipSnapshot.count) extents=\(pipSnapshot.map { NSStringFromRect($0.extent) })")
+        var dbgFrameCount = 0
+        manager.recordFilter = { image, time in
+            var out = image
+            if !s.isNeutral {
+                out = pipeline.apply(out, settings: s, time: time, quality: .video)
+            }
+            // PIP 同框烧入(与 processAndSave 同一布局:右上角,24% 宽,纵向堆叠)
+            for (idx, pip) in pipSnapshot.enumerated() where idx < 3 {
+                dbgFrameCount += 1
+                if dbgFrameCount % 120 == 1 { NSLog("[KinetCamera] recordFilter in=\(NSStringFromRect(image.extent)) out=\(NSStringFromRect(out.extent))") }
+                let pw = out.extent.width * 0.24
+                let scaled = pip.applyingFilter("CILanczosScaleTransform", parameters: [
+                    kCIInputScaleKey: pw / pip.extent.width,
+                ])
+                let ph = scaled.extent.height
+                let x = out.extent.maxX - pw - 12
+                let y = out.extent.maxY - ph - 12 - CGFloat(idx) * (ph + 8)
+                let placed = scaled.transformed(by: CGAffineTransform(translationX: x, y: y))
+                out = placed.applyingFilter("CISourceOverCompositing", parameters: [
+                    kCIInputBackgroundImageKey: out,
+                ])
+            }
+            return out
         }
         manager.startRecording()
     }

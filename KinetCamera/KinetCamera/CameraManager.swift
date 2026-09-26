@@ -53,6 +53,9 @@ final class CameraManager: NSObject, ObservableObject {
     /// 录像实时滤镜(nil = 原片直录)
     var recordFilter: ((CIImage, CMTime) -> CIImage?)?
 
+    /// 最近 sample buffer 原始帧尺寸(ingest 时记录;writer dims 对齐实际输入,防 CI render 坐标错位)
+    private(set) var lastIngestDims: (width: Int, height: Int) = (1280, 720)
+
     /// 最近一帧缓存(videoQueue 写,锁保护)
     private var lastFrameBox: (image: CIImage, time: CMTime)?
     private let frameLock = NSLock()
@@ -426,6 +429,12 @@ final class CameraManager: NSObject, ObservableObject {
         }
         if session.canAddInput(input) { session.addInput(input) }
 
+        // 显式拉 1080p:默认 preset(.high)在该设备给 720p sample buffer,
+        // 与 writer 声明的 1080p 不匹配 → 录像帧坐标错位(PIP 烧入被裁切的真实根因)
+        let canHD = session.canSetSessionPreset(.hd1920x1080)
+        if canHD { session.sessionPreset = .hd1920x1080 }
+        NSLog("[KinetCamera] session preset hd1920x1080 canSet=\(canHD) → \(session.sessionPreset.rawValue) (\(session.sessionPreset))")
+
         videoDataOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]
@@ -580,6 +589,18 @@ final class CameraManager: NSObject, ObservableObject {
     /// 配置帧率(不动 activeFormat:实测对内建 FaceTime 相机改格式会让 data output 静默断流)
     private func unlockMaxResolutionLocked(_ device: AVCaptureDevice) {        do {
             try device.lockForConfiguration()
+            // 锁定最大分辨率 format:仅设 frameDuration 不改 format,
+            // macOS 27 上 MacBook Air 相机 session preset 1080p 仍给 720p buffer,
+            // 必须显式选含 1920x1080 的 format 让 session/output 协商到 1080p
+            let candidates = device.formats.filter { fmt in
+                let d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
+                return d.width >= 1920 && d.height >= 1080
+                    && fmt.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 30 }
+            }
+            if let best = candidates.last, best != device.activeFormat {
+                device.activeFormat = best
+                NSLog("[KinetCamera] locked format \(CMVideoFormatDescriptionGetDimensions(best.formatDescription).width)x\(CMVideoFormatDescriptionGetDimensions(best.formatDescription).height)")
+            }
             let fpsMax = device.activeFormat.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 30.0
             if fpsMax >= 30.0 {
                 device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
@@ -621,6 +642,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         videoFrames &+= 1
+        lastIngestDims = (CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer))
         #if os(macOS)
         if SyntheticCameraSource.shared.isActive {
             NSLog("[KinetCamera] hardware frames resumed — stopping synthetic source")
@@ -798,12 +820,10 @@ extension CameraManager {
     }
 
     private func currentVideoDimensions() -> (width: Int, height: Int) {
-        // 调用方已在 sessionQueue 内,直接读(曾在这里 sessionQueue.sync 自死锁)
-        guard let id = activeDeviceID,
-              let device = devices.first(where: { $0.uniqueID == id }) else { return (1280, 720) }
-        let d = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let h = max(Int(d.height), 720) & ~1
-        let w = max(Int(d.width), 1280) & ~1
+        // 调用方已在 sessionQueue 内。设备 activeFormat 1080p 但 macOS 27 session
+        // 协商可能仍给 720p buffer,writer dims 必须跟实际输入帧走
+        let w = max(lastIngestDims.width, 1280) & ~1
+        let h = max(lastIngestDims.height, 720) & ~1
         return (w, h)
     }
 

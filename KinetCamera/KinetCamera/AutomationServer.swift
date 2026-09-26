@@ -299,7 +299,7 @@ final class AutomationServer {
                 "cameraAuthStatus": AVCaptureDevice.authorizationStatus(for: .video).rawValue,
                 "connEnabled": m.debugConnEnabled,
                 "outputsCount": m.debugOutputsCount,
-                "format": m.debugFormatDims,
+                "format": m.debugFormatDims, "ingestDims": "\(m.lastIngestDims.width)x\(m.lastIngestDims.height)",
                 "delivered": m.framesDelivered,
                 "dropped": m.framesDropped,
                 "videoFrames": m.videoFrames,

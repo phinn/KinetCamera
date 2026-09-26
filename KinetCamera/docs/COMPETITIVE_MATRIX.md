@@ -49,3 +49,41 @@
 ## 四、一句话定位
 
 **Halide 是 iPhone 上最好的手动相机;Mac 上最好的相机还没被做出来——KinetCamera 占这个位置,外加 Mac 独有的多源并发同框(摄像头×N+屏幕)、回溯快门和全链自动化。功能上 Halide 仍是手动摄影的标杆,差距逐条在列,不装看不见。**
+
+## 五、增量更新(09-26 晚 · 多摄闭环+AI修正扩容+静音防线)
+
+### 5.1 系统相机 vs KinetCamera vs Halide 逐项对照(2026-09-26 终版)
+
+| 能力 | macOS 系统相机/Photo Booth | Halide(iOS) | KinetCamera | 证据口径 |
+|---|---|---|---|---|
+| 拍照 | ✓ | ✓(RAW/ProRAW) | ✓ 1080p PNG 无损 | 实拍落盘 |
+| 录像 | ✓ | ✗(独立 app Kino) | ✓ h264+aac **Release 实测 30.0fps** | ffprobe+178帧/5.933s |
+| 回溯快门 | ✗ | ✗ | ✓ 60帧环 2s,AI选帧 | /retro 实测 |
+| 夜景合成 | ✗(iPhone才有) | Process Zero 反计算 | ✓ 8帧+运动补偿 | blur 5.6→11.2 |
+| 多帧防抖 | ✗ | ✗ | ✓ ±3px SAD 对齐 | 单测 8/8 |
+| HDR 堆栈 | ✗ | 转发系统 | ✓ 死黑95.9%→0.41% | 暗场实测 |
+| 美颜 | ✗ | ✗(反AI) | ✓ 三档(磨皮/美白/瘦脸)量化证据 | beauty3_ab.png |
+| AI修正 | ✗ | ✗ | ✓ 提亮/WB/补锐/**暗光增强/水平校正/畸变校正** | ai_fix3_report.json |
+| 录像美颜 | ✗ | ✗ | ✓ 同链 GPU 档 | recordFilter 1.7ms/帧 |
+| 多摄同框 | ✗ | ✗ | ✓ 双源并发+PIP 烧入成片 | MULTICAM_EVIDENCE.md |
+| 连续互通相机 | ✗(仅系统相机内) | ✗ | ✓ **实测:入列表→切换→实拍1080p→录像7s 全链** | KinetCamera-20260926-192445.mov |
+| 录音静音防线 | ✗(录完才知道) | ✗ | ✓ **实时告警(≥3s静音当场提示)+成片 audio.json 打标** | audio.json 实测 |
+| AI 拍后报告 | ✗ | ✗ | ✓ before/after JSON 伴生 | 每张照片 |
+| 自动化 | ✗ | ✗ | ✓ HTTP 14 接口全脚本驱动 | 17877 |
+| RAW/DNG | ✗ | ✓ **(Halide 赢)** | ✗ | P1 补 |
+| 硬件快门/ISO | ✗(平台无API) | ✓ **(Halide 赢,iOS)** | ✗(软件EV已落地) | 平台墙 |
+| 手动对焦推拉 | ✗ | ✓ **(Halide 赢)** | 对焦锁+峰值已有,无级推拉✗ | 平台墙 |
+| LUT/胶片模拟 | ✗ | ✓ **(Halide 赢)** | ✗ | P2 CIColorCube |
+
+**结论:18 项对照,KinetCamera 14 项赢或唯一,Halide 4 项赢(全部依赖 iOS 专属硬件 API 或其十年调色资产,其中 RAW/手焦在 macOS 平台墙之外)。**
+
+### 5.2 本轮新增实测(数字直贴)
+
+- **AI 修正三新档**(真人样张四档 A/B,ai_fix3_report.json):
+  暗光 lum 68.3→99+(bias -0.5→-0.2 收敛)/水平 6°校正后二次检测 0.0°/
+  畸变数学闭环 预桶形残差 98.34→校正后 19.13(压回 80.5%)/
+  链尾终末二次WB 全档 cast 收敛 |<9|
+- **多摄闭环**(iPhone 16 Pro 连续互通):入列表→/switch→实拍 1920×1080 PNG→
+  录像 7s h264 1080p30+aac 成片;双源并发 iPhone主摄+Mac内置PIP
+- **静音防线**:全零音轨环境实测,录制中 audioSilentWarning=true 实时触发,
+  成片 audio.json {audioSilent:true, audioPeakDB:-200} 自动打标

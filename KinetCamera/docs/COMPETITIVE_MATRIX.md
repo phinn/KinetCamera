@@ -116,3 +116,21 @@ error: value of type 'AVCaptureDevice.Format' has no member 'supportedFocusModes
 - **RAW/DNG**:macOS 全平台无 capture RAW API(iOS AVCapturePhotoOutput.rawPhotoPixelFormatType 不可用)。无损路 = PNG(已落地,零画质损失)
 - **Continuity Camera 不豁免**:它是软件桥接虚拟设备,capability 面只会窄于物理设备;lensPosition unavailable 是 SDK 编译期裁决,与接什么设备无关。**此线关闭,不再复测**
 - Halide 四项优势定位:硬快门/手焦/RAW = iOS 专属 API(平台墙);胶片LUT = 十年调色资产(产品资产非 API 墙,列为 P2 可追:CIColorCube 自定义 LUT 导入)
+
+### 6.4 Continuity Camera 实锤复测(09-26 晚,iPhone 上线窗口)
+```
+【"PhinniPhone"的相机】
+  RAW pixel formats: 空(RAW不可用)
+  isHighResolutionCaptureEnabled: false
+  focusMode: (空)
+  exposureMode: (空)
+```
+Continuity 桥接下 focus/RAW 同样全空,与 6.3 判断一致。**平台墙关线维持。**
+
+### 6.5 RAW 替代路径评估:iPhone ProRAW 侧拍 → 传回管线(关线前置条件)
+| 方案 | 路径 | 可行性 | 结论 |
+|---|---|---|---|
+| A. 系统相册取 DNG | iPhone 端 ProRAW 拍摄 → AirDrop/照片共享 → macOS 端 KinetCamera 打开 DNG → 走现有 AI 修正+美颜链 | 高:CIRawFilter 原生支持 DNG 解码,管线零改动(补一个"导入照片"入口) | **推荐 P1**:纯导入功能,不碰相机栈 |
+| B. app 内直接出 ProRAW | macOS 摄像头拿 RAW | 不可行:6.1/6.4 已证 API 墙 | 排除 |
+| C. iPhone 端装 KinetCamera iOS 版拍 ProRAW → WiFi 传回 | iOS AVCapturePhotoOutput rawPhotoPixelFormatTypes 可用(iOS 不封) | 中:iOS target 已有,需加 RAW 拍摄+传输链 | P2:跨设备链路长,价值在"三摄原生 RAW" |
+**结论:RAW 能力以"导入 DNG→本管线处理"的形态落地(方案A),相机栈 RAW 关线不变。**

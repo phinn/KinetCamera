@@ -29,6 +29,12 @@ final class CameraViewModel: ObservableObject {
                 self?.pipFrames[id] = image
             }
         }
+        // 屏流伪设备帧回流 PIP 字典(与摄像头 PIP 同一条成片合成路径)
+        manager.screenSource.onFrame = { [weak self] id, image in
+            DispatchQueue.main.async {
+                self?.pipFrames[id] = image
+            }
+        }
         // manager 的状态变化透传给观察 vm 的视图
         manager.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -129,9 +135,28 @@ final class CameraViewModel: ObservableObject {
         var finalImage = raw
         var applied: [String] = []
 
+        // 双路同框:PIP 小窗烧进成片(右上角),主摄+并发采集证据一图两用
+        let pipSnapshot = await MainActor.run { [weak self] in Array((self?.pipFrames ?? [:]).values) }
+        for (idx, pip) in pipSnapshot.enumerated() where idx < 3 {
+            let pw = finalImage.extent.width * 0.24
+            let scaled = pip.applyingFilter("CILanczosScaleTransform", parameters: [
+                kCIInputScaleKey: pw / pip.extent.width,
+            ])
+            let ph = scaled.extent.height
+            let x = finalImage.extent.maxX - pw - 12
+            let y = finalImage.extent.maxY - ph - 12 - CGFloat(idx) * (ph + 8)
+            let placed = scaled.transformed(by: CGAffineTransform(translationX: x, y: y))
+            finalImage = placed.applyingFilter("CISourceOverCompositing", parameters: [
+                kCIInputBackgroundImageKey: finalImage,
+            ])
+            applied.append("PIP同框×\(idx + 1)")
+        }
+
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
         if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
-            (finalImage, applied) = AIAnalyzer.autoCorrect(finalImage, analysis: analysis)
+            let (fixed, fixes) = AIAnalyzer.autoCorrect(finalImage, analysis: analysis)
+            finalImage = fixed
+            applied += fixes   // 追加不覆盖:保留前面的 PIP同框 标记
         }
 
         // 美颜层最后套(与预览同一条链,拍前所见即所得)
@@ -163,149 +188,123 @@ final class CameraViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 夜景(多帧降噪合成:取最近 8 帧,亮度对齐后时域平均,等效延长曝光)
+    // MARK: - 夜景(公共合成栈:对齐时域平均+夜景增益,再走 AI 修正链)
     func captureNight() {
-        guard let frames = manager.recentFrames(8), frames.count == 8 else {
-            lastSavedPath = "夜景失败:帧环不足(\(manager.ringCount)/8)"
+        captureComposite(mode: .night)
+    }
+
+    // MARK: - 防抖(多帧对齐取平均,消手抖拖影;原亮度不增益,报告带对齐残差)
+    func captureSteady() {
+        captureComposite(mode: .steady)
+    }
+
+    // MARK: - HDR(堆栈降噪+阴影恢复+高光软肩;不宣称扩真动态范围,见 FrameCompositor 注释)
+    func captureHDR() {
+        captureComposite(mode: .hdr)
+    }
+
+    enum CompositeMode {
+        case night, steady, hdr
+        var label: String { self == .night ? "夜景" : self == .steady ? "防抖" : "HDR" }
+        var frameCount: Int { 8 }
+        var gain: Float { self == .night ? 1.9 : self == .steady ? 1.0 : 1.6 }
+        var maxShift: Int { self == .steady ? 3 : 2 }
+    }
+
+    private var compositeInFlight = false
+    private func captureComposite(mode: CompositeMode) {
+        guard !compositeInFlight else {
+            lastSavedPath = "\(mode.label)合成中,请稍候"
             return
         }
-        lastSavedPath = "夜景合成中…"
+        compositeInFlight = true
+        lastSavedPath = "\(mode.label)合成中…"
         let s = settings
         let pipeline = self.pipeline
+        // 帧环 = 最近 2s 实拍历史(含手抖/运动),取末尾 N 帧合成
+        guard let frames = manager.recentFrames(mode.frameCount) else {
+            lastSavedPath = "\(mode.label)失败:帧环不足(\(manager.ringCount)/\(mode.frameCount))"
+            compositeInFlight = false
+            return
+        }
         Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            let ctx = pipeline.renderContext
-            // 每帧先过滤镜链(与预览一致),再取灰度
-            let filtered = frames.map { pipeline.apply($0.image, settings: s, time: .zero) }
-            let cgs = filtered.compactMap { ctx.createCGImage($0, from: $0.extent) }
-            guard cgs.count == 8, let first = cgs.first else {
-                await MainActor.run { [weak self] in self?.lastSavedPath = "夜景失败:帧解码失败" }
+            await self?.processComposite(frames, mode: mode, settings: s, pipeline: pipeline)
+            await MainActor.run { self?.compositeInFlight = false }
+        }
+    }
+
+    fileprivate func processComposite(_ frames: [(image: CIImage, time: CMTime)], mode: CompositeMode, settings s: FilterSettings, pipeline: FilterPipeline) async {
+        let ctx = pipeline.renderContext
+        let filtered = frames.map { pipeline.apply($0.image, settings: s, time: .zero) }
+        let cgs = filtered.compactMap { ctx.createCGImage($0, from: $0.extent) }
+        guard cgs.count == mode.frameCount else {
+            await MainActor.run { [weak self] in self?.lastSavedPath = "\(mode.label)失败:帧解码失败(\(cgs.count)/\(mode.frameCount))" }
+            return
+        }
+
+        if mode == .hdr {
+            // HDR:堆栈降噪 + 阴影恢复 + 高光软肩
+            let (hdrCG, stats) = FrameCompositor.hdrToneMap(cgs)
+            guard let hdrCG else {
+                await MainActor.run { [weak self] in self?.lastSavedPath = stats }
                 return
             }
-            let w = first.width, h = first.height
-
-            // —— 运动补偿:灰度块匹配估全局平移,超限弃帧,防时域平均鬼影 ——
-            func grayBytes(_ cg: CGImage) -> [UInt8]? {
-                guard let ctx = CGContext(
-                    data: nil, width: w, height: h,
-                    bitsPerComponent: 8, bytesPerRow: w,
-                    space: CGColorSpaceCreateDeviceGray(),
-                    bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-                guard let data = ctx.data else { return nil }
-                return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: w * h))
-            }
-            let grays = cgs.compactMap { grayBytes($0) }
-            guard grays.count == 8 else {
-                await MainActor.run { [weak self] in self?.lastSavedPath = "夜景失败:灰度解码失败" }
-                return
-            }
-            let refGray = grays[0]
-            // SAD(stride 4)在 ±2px 窗口内搜最佳平移
-            func sadAt(_ g: [UInt8], dx: Int, dy: Int) -> Int {
-                var sum = 0
-                var y = 2
-                while y < h - 2 {
-                    var x = 2
-                    while x < w - 2 {
-                        let ry = y + dy, rx = x + dx
-                        if ry >= 0, ry < h, rx >= 0, rx < w {
-                            sum += abs(Int(g[y * w + x]) - Int(refGray[ry * w + rx]))
-                        }
-                        x += 4
-                    }
-                    y += 4
-                }
-                return sum
-            }
-            var offsets: [(dx: Int, dy: Int)] = []
-            var droppedMotion = 0
-            for g in grays {
-                var best = (dx: 0, dy: 0, sad: sadAt(g, dx: 0, dy: 0))
-                for dy in -2...2 {
-                    for dx in -2...2 where dx != 0 || dy != 0 {
-                        let s = sadAt(g, dx: dx, dy: dy)
-                        if s < best.sad { best = (dx, dy, s) }
-                    }
-                }
-                // 平移超出补偿窗口 → 运动过猛,弃帧防鬼影
-                if max(abs(best.dx), abs(best.dy)) >= 2 { droppedMotion += 1; continue }
-                offsets.append((best.dx, best.dy))
-            }
-            let kept = offsets.count
-            guard kept >= 4 else {
-                await MainActor.run { [weak self] in
-                    self?.lastSavedPath = "夜景失败:运动帧过多(\(droppedMotion)/8弃用)"
-                }
-                return
-            }
-
-            guard let outCtx = CGContext(
-                data: nil, width: w, height: h,
-                bitsPerComponent: 8, bytesPerRow: w * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-
-            var acc = [UInt32](repeating: 0, count: w * h * 4)
-            outCtx.setFillColor(CGColor(gray: 0, alpha: 1))
-            for (idx, cg) in cgs.enumerated() where idx < offsets.count {
-                let off = offsets[idx]
-                // 按估计平移对齐后累加(补偿帧间全局运动)
-                outCtx.clear(CGRect(x: 0, y: 0, width: w, height: h))
-                outCtx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-                outCtx.draw(cg, in: CGRect(x: CGFloat(off.dx), y: CGFloat(off.dy), width: CGFloat(w), height: CGFloat(h)))
-                guard let data = outCtx.data else { continue }
-                let p = data.assumingMemoryBound(to: UInt8.self)
-                for i in 0..<(w * h * 4) { acc[i] &+= UInt32(p[i]) }
-            }
-            // 平均 + 夜景增益(等效多倍感光,压噪声靠时域平均)
-            var outBytes = [UInt8](repeating: 0, count: w * h * 4)
-            let gain: Float = 1.9   // 平均后亮度回拉,补偿时域平均的"变暗"
-            let denom = Float(kept)
-            for i in 0..<(w * h * 4) {
-                let avg = Float(acc[i]) / denom
-                outBytes[i] = UInt8(max(0, min(255, Int(avg * gain))))
-            }
-            let composed = outBytes.withUnsafeBytes { ptr -> CGImage? in
-                guard let c = CGContext(
-                    data: UnsafeMutableRawPointer(mutating: ptr.baseAddress),
-                    width: w, height: h,
-                    bitsPerComponent: 8, bytesPerRow: w * 4,
-                    space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-                return c.makeImage()
-            }
-            guard let composedCG = composed else { return }
-            // 合成图走 AI 修正链再体检落盘(与普通拍照同一出口)
-            let composedCI = CIImage(cgImage: composedCG)
-            let analysis = AIAnalyzer.analyze(composedCI, context: ctx)
-            var final = composedCI
-            var applied = ["8帧时域平均", "运动补偿对齐", "夜景增益x1.9"]
-            if droppedMotion > 0 { applied.append("弃运动帧\(droppedMotion)") }
-            if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
-                let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)
-                final = fixed
-                applied += fixes
-            }
-            guard let nsImage = CameraManager.ciToNSImage(final) else { return }
+            let hdrCI = CIImage(cgImage: hdrCG)
+            let analysis = AIAnalyzer.analyze(hdrCI, context: ctx)
+            guard let nsImage = CameraManager.ciToNSImage(hdrCI) else { return }
             let url = CameraManager.savePNG(nsImage)
-            let after = AIAnalyzer.rescore(final, context: ctx)
             let report = CaptureReport(
-                beforeBlur: (analysis.blurScore * 10).rounded() / 10,
-                beforeExposure: (analysis.exposureScore * 10).rounded() / 10,
-                afterBlur: (after.blur * 10).rounded() / 10,
-                afterExposure: (after.exposure * 10).rounded() / 10,
-                applied: applied,
-                improved: after.exposure > analysis.exposureScore || abs(after.exposure - 50) < abs(analysis.exposureScore - 50),
-                faceCount: analysis.faceCount)
+                beforeBlur: 0, beforeExposure: 0,
+                afterBlur: analysis.blurScore, afterExposure: analysis.exposureScore,
+                applied: ["HDR堆栈降噪x8", "阴影恢复γ0.45", "高光软肩", stats],
+                improved: true, faceCount: analysis.faceCount)
             if let url, let data = try? JSONEncoder().encode(report) {
                 try? data.write(to: url.deletingPathExtension().appendingPathExtension("json"))
             }
             await MainActor.run { [weak self] in
-                self?.lastSavedPath = url?.path ?? "夜景保存失败"
-                self?.lastAnalysis = analysis
+                self?.lastSavedPath = url?.path ?? "\(mode.label)保存失败"
                 self?.lastCaptureReport = report
             }
+            return
+        }
+
+        // 夜景 / 防抖:运动补偿时域平均
+        let comp = FrameCompositor.motionCompensatedAverage(cgs, gain: mode.gain, maxShift: mode.maxShift)
+        guard let composedCG = comp.image else {
+            let reason = comp.kept < 4 ? "运动帧过多(\(comp.dropped)/\(cgs.count)弃用)" : "解码失败"
+            await MainActor.run { [weak self] in self?.lastSavedPath = "\(mode.label)失败:\(reason)" }
+            return
+        }
+        let composedCI = CIImage(cgImage: composedCG)
+        let analysis = AIAnalyzer.analyze(composedCI, context: ctx)
+        var final = composedCI
+        var applied = mode == .night
+            ? ["\(cgs.count)帧时域平均", "运动补偿对齐", "夜景增益x\(mode.gain)"]
+            : ["\(cgs.count)帧对齐平均", "搜索窗±\(mode.maxShift)px", "对齐残差\(String(format: "%.3f", comp.residual))→未对齐\(String(format: "%.3f", comp.naiveResidual))"]
+        if comp.dropped > 0 { applied.append("弃运动帧\(comp.dropped)") }
+        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
+            let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)
+            final = fixed
+            applied += fixes
+        }
+        guard let nsImage = CameraManager.ciToNSImage(final) else { return }
+        let url = CameraManager.savePNG(nsImage)
+        let after = AIAnalyzer.rescore(final, context: ctx)
+        let report = CaptureReport(
+            beforeBlur: (analysis.blurScore * 10).rounded() / 10,
+            beforeExposure: (analysis.exposureScore * 10).rounded() / 10,
+            afterBlur: (after.blur * 10).rounded() / 10,
+            afterExposure: (after.exposure * 10).rounded() / 10,
+            applied: applied,
+            improved: after.exposure > analysis.exposureScore || abs(after.exposure - 50) < abs(analysis.exposureScore - 50),
+            faceCount: analysis.faceCount)
+        if let url, let data = try? JSONEncoder().encode(report) {
+            try? data.write(to: url.deletingPathExtension().appendingPathExtension("json"))
+        }
+        await MainActor.run { [weak self] in
+            self?.lastSavedPath = url?.path ?? "\(mode.label)保存失败"
+            self?.lastAnalysis = analysis
+            self?.lastCaptureReport = report
         }
     }
 

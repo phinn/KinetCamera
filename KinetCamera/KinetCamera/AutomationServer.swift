@@ -106,6 +106,16 @@ final class AutomationServer {
                 NotificationCenter.default.post(name: .kinetCaptureNight, object: nil)
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"night\"}")
+        case ("POST", "/steady"):
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kinetCaptureSteady, object: nil)
+            }
+            reply(conn, json: "{\"ok\":true,\"action\":\"steady\"}")
+        case ("POST", "/hdr"):
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .kinetCaptureHDR, object: nil)
+            }
+            reply(conn, json: "{\"ok\":true,\"action\":\"hdr\"}")
         case ("POST", "/burst"):
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .kinetCaptureBurst, object: nil)

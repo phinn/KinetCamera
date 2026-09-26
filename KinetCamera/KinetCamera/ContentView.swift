@@ -33,6 +33,8 @@ extension Notification.Name {
     static let kinetCapturePhoto = Notification.Name("kinetCapturePhoto")
     static let kinetToggleRecord = Notification.Name("kinetToggleRecord")
     static let kinetCaptureNight = Notification.Name("kinetCaptureNight")
+    static let kinetCaptureSteady = Notification.Name("kinetCaptureSteady")
+    static let kinetCaptureHDR = Notification.Name("kinetCaptureHDR")
     static let kinetCaptureRetro = Notification.Name("kinetCaptureRetro")
     static let kinetCaptureBurst = Notification.Name("kinetCaptureBurst")
     static let kinetToggleAELock = Notification.Name("kinetToggleAELock")
@@ -100,6 +102,12 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureNight)) { _ in
             vm.captureNight()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureSteady)) { _ in
+            vm.captureSteady()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureHDR)) { _ in
+            vm.captureHDR()
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureBurst)) { _ in
             vm.captureBurst()

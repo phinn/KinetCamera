@@ -5,7 +5,13 @@ import CoreImage
 final class CIRenderView: MTKView {
 
     var inputCIImage: CIImage? {
-        didSet { needsDisplay = true }
+        didSet {
+            #if os(macOS)
+            needsDisplay = true
+            #else
+            setNeedsDisplay(bounds)
+            #endif
+        }
     }
     private(set) var drawCount = 0
     private(set) var lastDrawError = ""

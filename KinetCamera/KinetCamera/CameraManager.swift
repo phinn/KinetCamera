@@ -1,7 +1,11 @@
 import AVFoundation
+#if os(macOS)
 import ScreenCaptureKit
+#endif
 import CoreImage
+#if canImport(AppKit)
 import AppKit
+#endif
 
 // MARK: - 画中画帧模型
 struct PIPDeviceFrame {
@@ -54,7 +58,27 @@ final class CameraManager: NSObject, ObservableObject {
     private let frameLock = NSLock()
 
     private var pipController: PIPController?
+    #if os(macOS)
     let screenSource = ScreenSourceController()
+    #else
+    final class ScreenSourceStub {
+        static let id = "kinet.screen.0"
+        var onFrame: ((String, CIImage) -> Void)?
+        var isActive = false
+        var frameCount = 0
+        var statusMessage: String { "iOS 不支持屏流" }
+        func sync(deviceIDs: [String]) {}
+        func stop() {}
+    }
+    let screenSource = ScreenSourceStub()
+    #endif
+    static var screenPseudoID: String {
+        #if os(macOS)
+        return ScreenSourceController.id
+        #else
+        return "kinet.screen.0"
+        #endif
+    }
     private var streamHealthTimer: Timer?
 
     /// 诊断:rebuild 后的连接状态(供 automation status 输出)
@@ -62,6 +86,8 @@ final class CameraManager: NSObject, ObservableObject {
     var debugOutputsCount = 0
     var debugFormatDims = ""
     private(set) var framesDelivered = 0
+    private(set) var droppedAtRecord = 0
+    private(set) var appendAttempts = 0
     private(set) var framesDropped = 0
     private(set) var videoFrames = 0
     private(set) var audioFrames = 0
@@ -141,28 +167,34 @@ final class CameraManager: NSObject, ObservableObject {
     func refreshDevices() {
         assert(Thread.isMainThread)
         var types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
+        #if os(macOS)
         if #available(macOS 14.0, *) {
             types.append(.external)
             types.append(.continuityCamera)
         } else {
-            // macOS 13:外部摄像头(OBS VirtualCam 等 DAL 插件设备)用 externalUnknown
             types.append(.externalUnknown)
         }
+        #else
+        types.append(contentsOf: [.builtInUltraWideCamera, .builtInTelephotoCamera, .builtInTrueDepthCamera])
+        if #available(iOS 17.0, *) { types.append(.external) }
+        #endif
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: types, mediaType: .video, position: .unspecified)
         var found = discovery.devices
         // 白名单兜底:macOS 14 新增的 DeskView(桌上视角)不在旧 deviceType 白名单里,
         // 但 devices(for:.video) 能枚举到 —— 全量枚举补差集,避免第二路视频源漏网
+        #if os(macOS)
         let all = AVCaptureDevice.devices(for: .video)
         for d in all where !found.contains(where: { $0.uniqueID == d.uniqueID }) {
             NSLog("[KinetCamera] discovery whitelist missed: %@ (%@)", d.localizedName, d.uniqueID)
             found.append(d)
         }
+        #endif
         devices = found
         // 离线清理:PIP 列表里已消失的设备(锁屏的 iPhone/拔掉的 USB 摄像头)立即摘除,
         // 防成片合成引用死源;主摄掉线时交给 awaitDevice/健康检查降级,不在这里强切。
         let liveIDs = Set(found.map { $0.uniqueID })
-        let deadPIP = pipDeviceIDs.filter { $0 != ScreenSourceController.id && !liveIDs.contains($0) }
+        let deadPIP = pipDeviceIDs.filter { $0 != Self.screenPseudoID && !liveIDs.contains($0) }
         if !deadPIP.isEmpty {
             pipDeviceIDs.removeAll { deadPIP.contains($0) }
             NSLog("[KinetCamera] PIP devices went offline, removed: %@", deadPIP.joined(separator: ","))
@@ -207,6 +239,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 自动切合成信号源(同一 pixelBuffer 路径);硬件恢复出帧后自动停用。
     private func startStreamHealthCheck() {
         streamHealthTimer?.invalidate()
+        #if os(macOS)
         guard SyntheticCameraSource.shared.isActive == false else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
             guard let self else { return }
@@ -218,6 +251,7 @@ final class CameraManager: NSObject, ObservableObject {
             SyntheticCameraSource.shared.start()
         }
         RunLoop.main.add(timer, forMode: .common)
+        #endif
     }
 
     /// 切换主摄(录像中禁止,避免写坏文件)
@@ -230,7 +264,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 主摄 ↔ 画中画
     func togglePIP(_ id: String) {
         guard !isRecording else { return }
-        if id == ScreenSourceController.id {
+        if id == Self.screenPseudoID {
             // 屏幕流:伪设备,不在 devices 枚举里,单独 toggle
             if let idx = pipDeviceIDs.firstIndex(of: id) {
                 pipDeviceIDs.remove(at: idx)
@@ -263,10 +297,11 @@ final class CameraManager: NSObject, ObservableObject {
     /// 全信号源状态(主摄 + 屏流),给 /status 诊断
     var pipStatusMessage: String {
         var parts: [String] = []
-        if let c = pipController, !pipDeviceIDs.filter({ $0 != ScreenSourceController.id }).isEmpty {
-            parts.append("摄像头PIP rig×\(pipDeviceIDs.filter { $0 != ScreenSourceController.id }.count)")
+        let camPips = pipDeviceIDs.filter { $0 != Self.screenPseudoID }
+        if let c = pipController, !camPips.isEmpty {
+            parts.append("摄像头PIP rig×\(camPips.count)")
         }
-        if pipDeviceIDs.contains(ScreenSourceController.id) {
+        if pipDeviceIDs.contains(Self.screenPseudoID) {
             parts.append("屏流[\(screenSource.statusMessage)]")
         }
         return parts.isEmpty ? "无PIP" : parts.joined(separator: " + ")
@@ -485,10 +520,12 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         videoFrames &+= 1
+        #if os(macOS)
         if SyntheticCameraSource.shared.isActive {
             NSLog("[KinetCamera] hardware frames resumed — stopping synthetic source")
             SyntheticCameraSource.shared.stop()
         }
+        #endif
         ingestPixelBuffer(pixelBuffer, time: time)
     }
 
@@ -533,22 +570,30 @@ extension CameraManager {
         return lastFrameBox?.image
     }
 
-    static func ciToNSImage(_ image: CIImage) -> NSImage? {
-        let context = FilterPipeline.shared.renderContext
-        guard let cg = context.createCGImage(image, from: image.extent) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    static func ciToCGImage(_ image: CIImage) -> CGImage? {
+        FilterPipeline.shared.renderContext.createCGImage(image, from: image.extent)
     }
 
-    static func savePNG(_ nsImage: NSImage) -> URL? {
-        let dir = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("KinetCamera", isDirectory: true)
+    /// 跨平台落盘:CIImage → PNG(macOS→~/Pictures,iOS→Documents)
+    @discardableResult
+    static func savePNG(image: CIImage) -> URL? {
+        guard let cg = ciToCGImage(image) else { return nil }
+        return savePNG(cg: cg)
+    }
+
+    @discardableResult
+    static func savePNG(cg: CGImage) -> URL? {
+        #if os(macOS)
+        let base = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
+        #else
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+        let dir = base.appendingPathComponent("KinetCamera", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
         let url = dir.appendingPathComponent("KinetCamera-\(formatter.string(from: Date())).png")
-        guard let tiff = nsImage.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        guard let png = AutomationServer.pngData(of: cg) else { return nil }
         do {
             try png.write(to: url)
             return url
@@ -665,8 +710,14 @@ extension CameraManager {
     private func writeVideoFrame(_ src: CVPixelBuffer, time: CMTime) {
         guard let writer = assetWriter,
               writer.status == .writing,
-              let input = videoInput,
-              input.isReadyForMoreMediaData else { return }
+              let input = videoInput else { return }
+        guard input.isReadyForMoreMediaData else {
+            droppedAtRecord &+= 1
+            if droppedAtRecord % 60 == 1 {
+                NSLog("[KinetCamera] record drop total=%d (isReadyForMoreMediaData=false)", droppedAtRecord)
+            }
+            return
+        }
 
         if !sessionStartAligned {
             writer.startSession(atSourceTime: time)   // 只调一次,对齐第一帧 PTS
@@ -678,6 +729,8 @@ extension CameraManager {
         var outBuffer: CVPixelBuffer? = src
         if let recordFilter {
             let ci = CIImage(cvPixelBuffer: src)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            defer { if videoFrames % 30 == 0 { NSLog("[KinetCamera] recordFilter cost %.1f ms", (CFAbsoluteTimeGetCurrent()-t0)*1000) } }
             if let filtered = recordFilter(ci, time),
                let pool = pixelBufferAdaptor?.pixelBufferPool {
                 var maybeBuf: CVPixelBuffer?
@@ -689,7 +742,11 @@ extension CameraManager {
             }
         }
         if let pb = outBuffer {
-            pixelBufferAdaptor?.append(pb, withPresentationTime: time)
+            appendAttempts &+= 1
+            let ok = pixelBufferAdaptor?.append(pb, withPresentationTime: time) ?? false
+            if !ok {
+                NSLog("[KinetCamera] append FAILED #%d pts=%.3f writerStatus=%d", appendAttempts, CMTimeGetSeconds(time), writer.status.rawValue)
+            }
         }
     }
 
@@ -790,6 +847,7 @@ final class PIPController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                        from connection: AVCaptureConnection) {}
 }
 
+#if os(macOS)
 // MARK: - 屏幕捕捉第二路信号源(CGDisplayStream)
 // 场景:教学/演示/直播需要「人+桌面资料同框」。不依赖摄像头栈(OBS 虚拟摄被系统禁、
 // 桌上视角相机需 iPhone 活跃),屏幕是每台 Mac 永远在的第二路画面。
@@ -860,3 +918,5 @@ final class ScreenSourceController: NSObject {
     }
 }
 
+
+#endif

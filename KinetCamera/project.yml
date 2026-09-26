@@ -3,7 +3,13 @@ options:
   bundleIdPrefix: com.kinet
   deploymentTarget:
     macOS: "13.0"
+    iOS: "17.0"
   createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: M92UKS6NA2
+    CODE_SIGN_STYLE: Automatic
 
 targets:
   KinetCamera:
@@ -18,10 +24,31 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "13.0"
         SWIFT_VERSION: "5.9"
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: KinetCamera/Info.plist
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 1.0.0
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+  KinetCameraiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: KinetCamera
+        excludes:
+          - "SyntheticCameraSource.swift"   # 合成源依赖 CGDisplayStream(macOS only)
+          - "Info.plist"                    # macOS 版 plist,防 Multiple commands produce
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kinet.KinetCamera.iOS
+        PRODUCT_NAME: KinetCamera
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_IDENTITY: "Apple Development"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: iOS/Info.plist
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0.0
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO

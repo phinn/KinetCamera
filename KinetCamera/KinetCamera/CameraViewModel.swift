@@ -47,6 +47,7 @@ final class CameraViewModel: ObservableObject {
             guard let ui = note.userInfo else { return }
             self?.settings.smoothing = ui["smoothing"] as? Double ?? 0
             self?.settings.whitening = ui["whitening"] as? Double ?? 0
+            self?.settings.backgroundBlur = ui["backgroundBlur"] as? Double ?? 0
         }
     }
 
@@ -165,8 +166,7 @@ final class CameraViewModel: ObservableObject {
             finalImage = pipeline.apply(finalImage, settings: beauty, time: .zero)
         }
 
-        guard let nsImage = CameraManager.ciToNSImage(finalImage) else { return }
-        let url = CameraManager.savePNG(nsImage)
+        let url = CameraManager.savePNG(image: finalImage)
 
         // 修正效果复打分(before/after 同帧硬证据,写进伴生 JSON)
         let after = AIAnalyzer.rescore(finalImage, context: ctx)
@@ -252,8 +252,7 @@ final class CameraViewModel: ObservableObject {
             }
             let hdrCI = CIImage(cgImage: hdrCG)
             let analysis = AIAnalyzer.analyze(hdrCI, context: ctx)
-            guard let nsImage = CameraManager.ciToNSImage(hdrCI) else { return }
-            let url = CameraManager.savePNG(nsImage)
+            let url = CameraManager.savePNG(image: hdrCI)
             let report = CaptureReport(
                 beforeBlur: 0, beforeExposure: 0,
                 afterBlur: analysis.blurScore, afterExposure: analysis.exposureScore,
@@ -288,8 +287,7 @@ final class CameraViewModel: ObservableObject {
             final = fixed
             applied += fixes
         }
-        guard let nsImage = CameraManager.ciToNSImage(final) else { return }
-        let url = CameraManager.savePNG(nsImage)
+        let url = CameraManager.savePNG(image: final)
         let after = AIAnalyzer.rescore(final, context: ctx)
         let report = CaptureReport(
             beforeBlur: (analysis.blurScore * 10).rounded() / 10,
@@ -327,8 +325,7 @@ final class CameraViewModel: ObservableObject {
             var scored: [(url: URL, blur: Double)] = []
             for (idx, f) in frames.enumerated() where idx % 3 == 0 {
                 let img = pipeline.apply(f.image, settings: s, time: .zero)
-                guard let nsImage = CameraManager.ciToNSImage(img) else { continue }
-                guard let url = CameraManager.savePNG(nsImage) else { continue }
+                guard let url = CameraManager.savePNG(image: img) else { continue }
                 let blur = AIAnalyzer.analyze(img, context: ctx).blurScore
                 scored.append((url, blur))
             }
@@ -345,7 +342,7 @@ final class CameraViewModel: ObservableObject {
         let s = settings
         let pipeline = self.pipeline
         manager.recordFilter = s.isNeutral ? nil : { image, time in
-            pipeline.apply(image, settings: s, time: time)
+            pipeline.apply(image, settings: s, time: time, quality: .video)
         }
         manager.startRecording()
     }

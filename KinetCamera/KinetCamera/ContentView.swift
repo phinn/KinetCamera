@@ -6,9 +6,14 @@ import AVFoundation
 struct KinetCameraApp: App {
     var body: some Scene {
         WindowGroup {
+            #if os(macOS)
             ContentView()
                 .frame(minWidth: 960, minHeight: 640)
+            #else
+            ContentView()
+            #endif
         }
+        #if os(macOS)
         .windowStyle(.automatic)
         .commands {
             CommandGroup(after: .newItem) {
@@ -26,6 +31,7 @@ struct KinetCameraApp: App {
                     .keyboardShortcut("r", modifiers: .command)
             }
         }
+        #endif
     }
 }
 
@@ -122,6 +128,7 @@ struct ContentView: View {
 }
 
 // MARK: - 画中画小窗渲染
+#if os(macOS)
 struct PIPPreviewView: NSViewRepresentable {
     let image: CIImage?
 
@@ -144,6 +151,25 @@ struct PreviewView: NSViewRepresentable {
     }
     func updateNSView(_ nsView: CIRenderView, context: Context) {}
 }
+#endif
+
+#if os(iOS)
+import UIKit
+struct PIPPreviewView: UIViewRepresentable {
+    let image: CIImage?
+    func makeUIView(context: Context) -> CIRenderView { CIRenderView(frame: .zero) }
+    func updateUIView(_ v: CIRenderView, context: Context) { v.inputCIImage = image }
+}
+struct PreviewView: UIViewRepresentable {
+    let vm: CameraViewModel
+    func makeUIView(context: Context) -> CIRenderView {
+        let v = CIRenderView(frame: .zero)
+        vm.attach(v)
+        return v
+    }
+    func updateUIView(_ v: CIRenderView, context: Context) {}
+}
+#endif
 
 // MARK: - 网格(三分线)
 struct GridOverlay: View {
@@ -390,10 +416,14 @@ struct SidePanelView: View {
                                     Spacer()
                                     if !isMain {
                                         Button(isPIP ? "移除" : "画中画") { vm.togglePIP(dev.uniqueID) }
+                                            #if os(macOS)
                                             .buttonStyle(.link)
+                                            #endif
                                             .font(.caption)
                                         Button("设为主摄") { vm.switchDevice(dev.uniqueID) }
+                                            #if os(macOS)
                                             .buttonStyle(.link)
+                                            #endif
                                             .font(.caption)
                                     } else {
                                         Text("主摄").font(.caption2).foregroundColor(.green)

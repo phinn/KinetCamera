@@ -1,7 +1,9 @@
 import Foundation
 import Network
 import CoreImage
+#if canImport(AppKit)
 import AppKit
+#endif
 import AVFoundation
 
 /// 本地 loopback 自动化接口(仅绑定 127.0.0.1,外部不可达):
@@ -127,7 +129,8 @@ final class AutomationServer {
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"aelock-toggle\"}")
         case ("POST", "/brightness"):
-            // AE 闭环验证:模拟场景光变化,如 /brightness?f=0.4
+            // AE 闭环验证:模拟场景光变化,如 /brightness?f=0.4(iOS 无合成源,空操作)
+            #if os(macOS)
             var f = 1.0
             if let r = target.range(of: "f=") {
                 let s = target[r.upperBound...].components(separatedBy: "&").first ?? ""
@@ -135,26 +138,30 @@ final class AutomationServer {
             }
             SyntheticCameraSource.shared.brightnessFactor = f
             reply(conn, json: "{\"ok\":true,\"brightnessFactor\":\(f)}")
+            #else
+            reply(conn, json: "{\"ok\":true,\"brightnessFactor\":1.0,\"note\":\"macOS only\"}")
+            #endif
         case ("POST", "/beauty"):
-            // 美颜:平滑+美白一键,如 /beauty?s=0.6&w=0.4 或 /beauty?preset=off
-            var s = 0.0, w = 0.0
+            // 美颜+人像虚化一键: /beauty?s=0.6&w=0.4&b=0.8 或 /beauty?preset=off
+            var s = 0.0, w = 0.0, b = 0.0
             func param(_ key: String) -> Double? {
                 guard let r = target.range(of: "\(key)=") else { return nil }
                 let str = target[r.upperBound...].components(separatedBy: "&").first ?? ""
                 return Double(str)
             }
             if target.contains("preset=off") {
-                s = 0; w = 0
+                s = 0; w = 0; b = 0
             } else {
                 s = min(max(param("s") ?? 0.6, 0), 1)
                 w = min(max(param("w") ?? 0.4, 0), 1)
+                b = min(max(param("b") ?? 0, 0), 1)
             }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
                     name: Notification.Name("kinetSetBeauty"), object: nil,
-                    userInfo: ["smoothing": s, "whitening": w])
+                    userInfo: ["smoothing": s, "whitening": w, "backgroundBlur": b])
             }
-            reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w)}")
+            reply(conn, json: "{\"ok\":true,\"smoothing\":\(s),\"whitening\":\(w),\"backgroundBlur\":\(b)}")
         case ("POST", "/exposure"):
             // 手动曝光(软件EV档): /exposure?ev=1.0 或 /exposure?ev=auto(回0)
             var ev = 0.0
@@ -236,9 +243,11 @@ final class AutomationServer {
                     // 全部可用信号源入 PIP:非主摄摄像头 + 屏幕流
                     let others = vm.manager.devices.filter { $0.uniqueID != vm.manager.activeDeviceID }
                     for d in others { vm.togglePIP(d.uniqueID) }
+                    #if os(macOS)
                     if !vm.manager.pipDeviceIDs.contains(ScreenSourceController.id) {
                         vm.togglePIP(ScreenSourceController.id)
                     }
+                    #endif
                     self.reply(conn, json: "{\"ok\":true,\"pipAll\":\(others.count + 1)}")
                 } else {
                     self.reply(conn, json: "{\"error\":\"need id= or on=1\"}", status: "400 Bad Request")
@@ -283,7 +292,7 @@ final class AutomationServer {
                 "dropped": m.framesDropped,
                 "videoFrames": m.videoFrames,
                 "audioFrames": m.audioFrames,
-                "syntheticActive": SyntheticCameraSource.shared.isActive,
+                "syntheticActive": Self.syntheticActive,
                 "micAuthStatus": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
                 "micName": m.activeMicName,
                 "deviceNames": m.devices.map { $0.localizedName },
@@ -315,12 +324,26 @@ final class AutomationServer {
             reply(conn, json: "{\"error\":\"render failed\"}", status: "500 Internal Server Error")
             return
         }
-        let rep = NSBitmapImageRep(cgImage: cg)
-        guard let png = rep.representation(using: .png, properties: [:]) else {
+        guard let png = Self.pngData(of: cg) else {
             reply(conn, json: "{\"error\":\"encode failed\"}", status: "500 Internal Server Error")
             return
         }
         send(conn, data: png, contentType: "image/png")
+    }
+
+    #if os(macOS)
+    static var syntheticActive: Bool { SyntheticCameraSource.shared.isActive }
+    #else
+    static var syntheticActive: Bool { false }
+    #endif
+
+    /// 跨平台 PNG 编码(ImageIO,macOS/iOS 通用)
+    static func pngData(of cg: CGImage) -> Data? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out as CFMutableData, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, cg, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
     }
 
     private func reply(_ conn: NWConnection, json: String, status: String = "200 OK") {

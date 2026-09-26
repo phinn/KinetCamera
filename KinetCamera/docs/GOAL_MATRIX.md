@@ -8,7 +8,7 @@
 | # | 目标项 | 状态 | 本轮实测证据 |
 |---|--------|------|-------------|
 | 1 | 拍照 | ✅ | `/capture` → PNG 落盘 97-101KB,report blur=100(归一化修复后),AI 去暖(19) 自动触发 |
-| 2 | 视频(录像) | ✅ 本轮挖出并修复成片损坏 | `/record` 6s → h264 1280×720 + aac 48k 实测 156 帧=26.6fps(Debug),ffprobe 全流可读,evidence/record_26fps_fixed.mov;根因链=合成源 PTS 30Hz 栅栏重复+音频 format 不匹配,均修复(12ea2e8) |
+| 2 | 视频(录像) | ✅ 本轮挖出并修复成片损坏 | `/record` 6s → h264 1280×720 + aac 48k,Release 实测 178 帧/5.933s=**30.0fps 整**,ffprobe 全流可读,evidence/record_30fps_release.mov+抽帧PNG;Debug 26.6fps(record_26fps_fixed.mov);根因链=合成源 PTS 30Hz 栅栏重复+音频 format 不匹配,均修复(12ea2e8) |
 | 3 | 美颜 | ✅ 本轮补验收+修真 bug | 真人照片 A/B(docs/evidence/beauty_ab_final.png):亮度 188→197,R-B 22.7→21.9(去黄),磨皮后干净图边缘保持 81%;**挖出并修复高频回注噪声直通 bug**(下详) |
 | 4 | AI 修正 | ✅ | report 链 before/after 全量:cast 19.5→-7.7 / exp 65.6→63.5 / blur 100,improved=true;色偏检测+白平衡增益+补锐全活 |
 | 5 | 多摄 | ✅(受硬件限) | 系统只枚举 1 路物理摄(iPhone 连续互通离线,cam_enum 实测);第 2 路屏流伪设备 PIP 双路同框照片+录像双证据;`/awaitDevice` 热恢复链 waiting→degraded→online 全通,iPhone 上线即自动接管成真 3 摄 |
@@ -75,3 +75,25 @@
 1. 点屏上相机弹框 [允许](macOS 27 合成点击免疫,只能手点)
 2. 重启 Mac(解音频 coreaudiod/HAL + launchd 弹框链)
 3. 重启后跑 `bash scripts/post_reboot_verify.sh`(音频 aq_probe 一锤定音 + TCC 本名验证 + 14 用例全量回归 + 录像全链复验)
+
+## AI 修正链实测(09-26 晚,scripts/ai_correct_verify.swift 与 app 同源编译)
+
+| 场景 | before cast/exp/lum | after cast/exp/lum | 施加修正 |
+|---|---|---|---|
+| 钨丝灯模拟(R×1.25/B×0.75) | cast 55.8 / exp52.3 / lum189 | **27.2** / 80.9 / 152.5 | 压高光-0.55EV + AI去暖 + 美颜 |
+| 偏蓝模拟(R×0.75/B×1.25) | cast -9.7 / exp58.0 | -10.5(保持中性) / 83.0 / 149.8 | 压高光 + AI去冷 + 美颜 |
+| 原图(棚拍人像) | cast 22.8 / exp53.0 | **8.8(<12 中性)** / 80.8 / 152.6 | 压高光 + AI去暖 + 美颜 |
+| 压暗模拟(EV-1.3) | blur 58.7 | **100** lum124.5 保持 | AI去暖 + 美颜(bias 正确不再误压光) |
+| 强过曝(EV+1.5) | bias=1.00 | bias 0.81 收敛 | 压高光-0.55EV |
+
+本轮修掉两个方向性 bug:
+1. **CITemperatureAndTint 全黑**:macOS 27 连 neutral=6500 标准域也输出全黑(harness 铁证 lum 183→0),
+   人像色温中性化分支彻底移除,色温修正全走 CIColorMatrix WB gain
+2. **曝光方向反判**:旧代码拿质量分 >78 当"过曝"压光(高分=接近理想,语义完全反了),
+   白背景正常照片会被 +0.8EV 越提越曝。新增 exposureBias(-1..+1)方向量驱动修正,
+   quality 分只做展示/评分。WB gain 从分档(0.18/0.35/0.5,强暖图过校翻转 -26.7)改连续比例式
+   min(0.30, |cast|/220),实测四档方向全对
+
+夜景/防抖/HDR 合成回归修复:合成源移动 band(2px/帧)在时域平均运动检测(±2px 搜索窗,SAD 采样
+4px 网格)下单帧 SAD 12-17 万,7/8 帧被误弃"运动过猛"。band 改静止,三链路实测全通:
+夜景(8帧平均+增益x1.9, cast 48.7→-14) / 防抖(残差 0.006 vs 未对齐 0.007) / HDR(kept8 弃0, exp→94.7)

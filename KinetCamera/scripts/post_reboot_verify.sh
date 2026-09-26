@@ -9,7 +9,7 @@ bad()  { echo "❌ $1"; FAIL=$((FAIL+1)); }
 
 echo "=== ① 音频一锤定音(aq_probe 声学闭环) ==="
 echo ">>> 请对 Mac 说话或敲桌子(5 秒采样窗口)"
-xcrun swiftc -O -o /tmp/aq_verify scripts/aq_probe.swift 2>/dev/null || xcrun swiftc -O -o /tmp/aq_verify scripts/aq_probe.swift -framework CoreAudio -framework CoreFoundation 2>/dev/null
+xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift 2>/dev/null || xcrun swiftc -O -parse-as-library -o /tmp/aq_verify scripts/aq_probe.swift -framework CoreAudio -framework CoreFoundation 2>/dev/null
 AQ_OUT=$(/tmp/aq_verify 2>&1 | tail -5)
 echo "$AQ_OUT"
 echo "$AQ_OUT" | grep -qE "peak=0\.0*[1-9]" && ok "音频采集出数(硬件层已恢复)" || bad "音频仍全零 → 定级 Exclave DSP/硬件,走 Apple Store 硬件诊断"

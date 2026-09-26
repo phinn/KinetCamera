@@ -1,4 +1,6 @@
 import AVFoundation
+import ImageIO
+import UniformTypeIdentifiers
 #if os(macOS)
 import ScreenCaptureKit
 #endif
@@ -44,6 +46,12 @@ final class CameraManager: NSObject, ObservableObject {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    // 多机位真多轨:每路 PIP 设备一条独立视频轨(同一 writer、同一时间轴=天然 root clock 对齐),
+    // 成片 m4v/mov 带 N 条 v 流,剪辑器(FCP/PR)可当多机位拆轨,不再烧 PIP 快照进主画面。
+    private var pipVideoInputs: [String: AVAssetWriterInput] = [:]
+    private var pipAdaptors: [String: AVAssetWriterInputPixelBufferAdaptor] = [:]
+    private var pipInputAppended: Set<String> = []   // 该辅轨 append 过至少一帧(stop 时决定 mark 或丢弃)
+    private var recordStartHost: CFTimeInterval?     // 起录主机钟时刻(root clock 原点)
     private var sessionStartAligned = false
     private var sessionStartPTS = CMTime.zero       // 视频首帧 PTS(会话时间轴原点)
     private var lastVideoPTS: CMTime?               // 上一视频帧 PTS(录制中时基断裂检测)
@@ -121,6 +129,7 @@ final class CameraManager: NSObject, ObservableObject {
     override init() {
         super.init()
         refreshDevices()
+        bindScreenTrack()
         NotificationCenter.default.addObserver(
             self, selector: #selector(devicesChanged),
             name: .AVCaptureDeviceWasConnected, object: nil)
@@ -424,6 +433,9 @@ final class CameraManager: NSObject, ObservableObject {
             pipController = PIPController()
             pipController?.onFrame = { [weak self] id, image in
                 self?.onPIPFrame?(id, image)
+            }
+            pipController?.onFrameRaw = { [weak self] id, pb, time in
+                self?.writePIPFrame(id, pixelBuffer: pb, hostTime: CFAbsoluteTimeGetCurrent())
             }
         }
         pipController?.setActive(ids: pipDeviceIDs, devices: devices)
@@ -751,6 +763,81 @@ extension CameraManager {
         return savePNG(cg: cg)
     }
 
+    /// 拍照落盘(JPEG+完整EXIF)。EXIF 写进 JPEG 容器,CGImageSource 直读;
+    /// 同一时间戳再落一张无损 PNG(用户定的保底交付,不被 EXIF 需求牺牲)。
+    /// - Parameters:
+    ///   - exif: kCGImagePropertyExifDictionary 键值(已含 DateTimeOriginal 等)
+    ///   - tiff: kCGImagePropertyTIFFDictionary(Make/Model/Software 必须 TIFF 域,EXIF 域会被读取器忽略)
+    @discardableResult
+    static func savePhoto(cg: CGImage, exif: [String: Any], tiff: [String: Any]) -> URL? {
+        #if os(macOS)
+        let base = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
+        #else
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+        let dir = base.appendingPathComponent("KinetCamera", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let stamp = formatter.string(from: Date())
+
+        // JPEG + EXIF(主交付,CGImageSource 直读)
+        let jpegURL = dir.appendingPathComponent("KinetCamera-\(stamp).jpg")
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        var props: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.95,
+            kCGImagePropertyExifDictionary: exif,
+            kCGImagePropertyTIFFDictionary: tiff,
+        ]
+        CGImageDestinationAddImage(dest, cg, props as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        try? (out as Data).write(to: jpegURL)
+
+        // PNG 无损保底(兼容既有消费链)
+        let pngURL = dir.appendingPathComponent("KinetCamera-\(stamp).png")
+        if let png = AutomationServer.pngData(of: cg) {
+            try? png.write(to: pngURL)
+        }
+        return jpegURL
+    }
+
+    /// 从设备快照构造拍照 EXIF/TIFF(设备为 nil 时仍写软件/时间基础字段,不返回 nil)
+    static func captureMetadata(device: AVCaptureDevice?) -> (exif: [String: Any], tiff: [String: Any]) {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        let now = f.string(from: Date())
+        var exif: [String: Any] = [
+            kCGImagePropertyExifDateTimeOriginal as String: now,
+            kCGImagePropertyExifDateTimeDigitized as String: now,
+        ]
+        var tiff: [String: Any] = [
+            kCGImagePropertyTIFFSoftware as String: "KinetCamera",
+            kCGImagePropertyTIFFDateTime as String: now,
+        ]
+        if let d = device {
+            tiff[kCGImagePropertyTIFFMake as String] = d.manufacturer
+            tiff[kCGImagePropertyTIFFModel as String] = d.localizedName
+            exif[kCGImagePropertyExifLensMake as String] = d.manufacturer
+            exif[kCGImagePropertyExifLensModel as String] = d.localizedName
+            exif[kCGImagePropertyExifExposureProgram as String] = 2   // Program AE(相机自动)
+            exif[kCGImagePropertyExifWhiteBalance as String] = 0      // Auto WB
+            #if os(iOS)
+            // macOS 平台墙:iso/exposureDuration/lensAperture 编译期 unavailable(见 TIMEBASE docs),
+            // Mac 侧 ISO/快门/光圈字段不写(宁缺勿假),iOS 侧写真值
+            if d.iso > 0 { exif[kCGImagePropertyExifISOSpeedRatings as String] = [Int(d.iso)] }
+            if d.exposureDuration.seconds > 0, d.exposureDuration.seconds < 1 {
+                exif[kCGImagePropertyExifExposureTime as String] = d.exposureDuration.seconds
+            }
+            if d.lensAperture > 0 { exif[kCGImagePropertyExifFNumber as String] = d.lensAperture }
+            let fov = d.activeFormat.videoFieldOfView
+            if fov > 0 { exif[kCGImagePropertyExifFocalLength as String] = Float(35.0 / tan(fov * .pi / 360.0)) }
+            #endif
+        }
+        return (exif, tiff)
+    }
+
     @discardableResult
     static func savePNG(cg: CGImage) -> URL? {
         #if os(macOS)
@@ -837,6 +924,35 @@ extension CameraManager {
                 NSLog("[KinetCamera] 无音频 format 缓存,本次录像仅视频轨")
             }
 
+            // PIP 真多轨:开录瞬间快照当前 PIP 设备列表,每路一条辅轨 input。
+            // 尺寸统一 960x540(PIP 源分辨率,屏流 960x540/连续互通低清),帧由 writePIPFrame 实时进轨。
+            for pipID in self.pipDeviceIDs {
+                let pw: Int32 = 960, ph: Int32 = 540
+                let pInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                    AVVideoCodecKey: AVVideoCodecType.h264,
+                    AVVideoWidthKey: pw,
+                    AVVideoHeightKey: ph,
+                ])
+                pInput.expectsMediaDataInRealTime = true
+                let pAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+                    assetWriterInput: pInput,
+                    sourcePixelBufferAttributes: [
+                        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                        kCVPixelBufferWidthKey as String: pw,
+                        kCVPixelBufferHeightKey as String: ph,
+                    ])
+                if writer.canAdd(pInput) {
+                    writer.add(pInput)
+                    self.pipVideoInputs[pipID] = pInput
+                    self.pipAdaptors[pipID] = pAdaptor
+                    NSLog("[KinetCamera] PIP track added: \(pipID)")
+                } else {
+                    NSLog("[KinetCamera] PIP track REJECTED by writer: \(pipID)")
+                }
+            }
+            self.pipInputAppended.removeAll()
+            self.recordStartHost = CFAbsoluteTimeGetCurrent()
+
             self.assetWriter = writer
             self.videoInput = vInput
             self.audioInput = aInput
@@ -898,6 +1014,17 @@ extension CameraManager {
                 } else {
                     self.audioInput = nil
                 }
+                // PIP 辅轨同理:只 mark 写过帧的轨,零帧轨直接丢弃引用防挂起
+                for (id, pInput) in self.pipVideoInputs {
+                    if self.pipInputAppended.contains(id) {
+                        pInput.markAsFinished()
+                    }
+                }
+                self.pipVideoInputs.removeAll()
+                self.pipAdaptors.removeAll()
+            } else {
+                self.pipVideoInputs.removeAll()
+                self.pipAdaptors.removeAll()
             }
             NSLog("[KinetCamera] finishWriting 开始 status=\(writer.status.rawValue) errRAW=\(writer.error) aligned=\(sessionStartAligned) audioIn=\(audioInput != nil)")
             writer.finishWriting {
@@ -924,6 +1051,72 @@ extension CameraManager {
     }
 
     // sessionQueue 上下文调用
+    /// 屏流帧进辅轨:ioSurface → CVPixelBuffer → writePIPFrame 同一条轨逻辑(与 PIPController 共轨逻辑)
+    /// iOS 无屏流(ScreenSourceStub),bind 为 no-op
+    func bindScreenTrack() {
+        #if os(macOS)
+        screenSource.onRawSurface = { [weak self] surface, hostTime in
+            guard let self, self.isRecording else { return }
+            var pbUnmanaged: Unmanaged<CVPixelBuffer>?
+            let status = CVPixelBufferCreateWithIOSurface(
+                kCFAllocatorDefault, surface,
+                [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA] as CFDictionary,
+                &pbUnmanaged)
+            let pb: CVPixelBuffer? = (status == kCVReturnSuccess) ? pbUnmanaged?.takeRetainedValue() : nil
+            guard let pb else { return }
+            self.writePIPFrame(ScreenSourceController.id, pixelBuffer: pb, hostTime: hostTime)
+        }
+        #endif
+    }
+
+    /// PIP 实时帧进辅轨(真多轨,不烧入主画面)。
+    /// root clock = 主机单调钟:CFAbsoluteTime。各设备原始 PTS 时基互不相干(屏流/连续互通各有时钟),
+    /// 到达即弃源 PTS,用「相对起录时刻的主机钟偏移 + sessionStartPTS」生成辅轨 PTS,
+    /// 与主轨(同主机钟轴实时写入)天然同轴 —— 这就是跨设备 root clock 对齐。
+    /// 主轨尚未 startSession(首帧未到)时辅轨先缓冲丢弃,保证 writer 会话起点恒由主轨定义。
+    func writePIPFrame(_ deviceID: String, pixelBuffer: CVPixelBuffer, hostTime: CFTimeInterval) {
+        guard isRecording,
+              let writer = assetWriter, writer.status == .writing,
+              let input = pipVideoInputs[deviceID],
+              let adaptor = pipAdaptors[deviceID] else { return }
+        guard sessionStartAligned, let startHost = recordStartHost else { return }
+        guard input.isReadyForMoreMediaData else { return }
+        let sessionPTS = CMTimeAdd(sessionStartPTS,
+            CMTime(seconds: max(0, hostTime - startHost), preferredTimescale: 600))
+        let pb: CVPixelBuffer
+        if let pool = adaptor.pixelBufferPool {
+            var maybe: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &maybe)
+            if let buf = maybe {
+                // pool buffer 是空白内存,必须把源帧像素拷进去(直接 append 空 buf = 成片黑帧)
+                pb = buf
+                CVPixelBufferLockBaseAddress(buf, [])
+                CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+                defer {
+                    CVPixelBufferUnlockBaseAddress(buf, [])
+                    CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+                }
+                guard let dst = CVPixelBufferGetBaseAddress(buf),
+                      let srcAddr = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                    return
+                }
+                let dw = CVPixelBufferGetWidth(buf), dh = CVPixelBufferGetHeight(buf)
+                let sw = CVPixelBufferGetWidth(pixelBuffer), sh = CVPixelBufferGetHeight(pixelBuffer)
+                let dBytes = CVPixelBufferGetBytesPerRow(buf)
+                let sBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                let copyH = min(dh, sh), copyW = min(dw, sw) * 4
+                let dBase = dst.assumingMemoryBound(to: UInt8.self)
+                let sBase = srcAddr.assumingMemoryBound(to: UInt8.self)
+                for row in 0..<copyH {
+                    memcpy(dBase + row * dBytes, sBase + row * sBytes, copyW)
+                }
+            } else { pb = pixelBuffer }
+        } else { pb = pixelBuffer }
+        if adaptor.append(pb, withPresentationTime: sessionPTS) {
+            pipInputAppended.insert(deviceID)
+        }
+    }
+
     private func writeVideoFrame(_ src: CVPixelBuffer, time: CMTime) {
         guard let writer = assetWriter,
               writer.status == .writing,
@@ -1093,6 +1286,8 @@ extension CameraManager {
 
 // MARK: - 画中画(每设备一套独立 input+output+session)
 final class PIPController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    var onFrameRaw: ((String, CVPixelBuffer, CMTime) -> Void)?
+
 
     var onFrame: ((String, CIImage) -> Void)?
     private var rigs: [String: PIPRig] = [:]
@@ -1147,6 +1342,7 @@ final class PIPController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         // 用 output 实例反查所属 rig,拿到设备 ID
         let deviceID = rigs.first { $0.value.output === output }?.key
         guard let deviceID else { return }
+        onFrameRaw?(deviceID, pixelBuffer, CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         onFrame?(deviceID, CIImage(cvPixelBuffer: pixelBuffer))
     }
 
@@ -1164,6 +1360,7 @@ final class ScreenSourceController: NSObject {
     static let id = "kinet.screen.0"   // 伪设备 ID,UI/接口用同一标识
 
     var onFrame: ((String, CIImage) -> Void)?
+    var onRawSurface: ((IOSurface, CFTimeInterval) -> Void)?
     private var stream: CGDisplayStream?
     private(set) var isActive = false
     private(set) var frameCount = 0
@@ -1203,6 +1400,9 @@ final class ScreenSourceController: NSObject {
             handler: { [weak self] _, _, ioSurface, _ in
                 guard let self, let ioSurface = ioSurface else { return }
                 self.frameCount += 1
+                let now = CFAbsoluteTimeGetCurrent()
+                // 辅轨(真多轨):屏流帧经回调交给 manager 进 writer(录像中才实际写入)
+                self.onRawSurface?(ioSurface, now)
                 self.onFrame?(ScreenSourceController.id, CIImage(ioSurface: ioSurface))
             }) else {
             lastError = "CGDisplayStream 创建失败"

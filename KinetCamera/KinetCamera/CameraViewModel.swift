@@ -198,7 +198,11 @@ final class CameraViewModel: ObservableObject {
             finalImage = pipeline.apply(finalImage, settings: beauty, time: .zero)
         }
 
-        let url = CameraManager.savePNG(image: finalImage)
+        // EXIF 元数据(设备实参:ISO/曝光时间/光圈/镜头)+ PNG 无损保底
+        let device = manager.devices.first { $0.uniqueID == manager.activeDeviceID }
+        let meta = CameraManager.captureMetadata(device: device)
+        guard let cgFinal = pipeline.renderContext.createCGImage(finalImage, from: finalImage.extent) else { return }
+        let url = CameraManager.savePhoto(cg: cgFinal, exif: meta.exif, tiff: meta.tiff)
 
         // 修正效果复打分(before/after 同帧硬证据,写进伴生 JSON;含色偏复测)
         let after = AIAnalyzer.rescore(finalImage, context: ctx)  // (blur, exposure, colorCast, bias)
@@ -389,32 +393,11 @@ final class CameraViewModel: ObservableObject {
     func startRecording() {
         let s = settings
         let pipeline = self.pipeline
-        // 录像开始时快照 PIP 帧(录像中 PIP 字典持续更新,这里取进入画面,与拍照同框语义一致)
-        let pipSnapshot = Array(pipFrames.values)
-        NSLog("[KinetCamera] startRecording: pipSnapshot=\(pipSnapshot.count) extents=\(pipSnapshot.map { "\($0.extent)" })")
-        var dbgFrameCount = 0
+        // PIP 不再烧入主画面:每路 PIP 是一条独立视频辅轨(manager.writePIPFrame 实时写入,
+        // 同一 writer 同一主机钟 root clock,成片双 v 流可多机位拆轨)
         manager.recordFilter = { image, time in
-            var out = image
-            if !s.isNeutral {
-                out = pipeline.apply(out, settings: s, time: time, quality: .video)
-            }
-            // PIP 同框烧入(与 processAndSave 同一布局:右上角,24% 宽,纵向堆叠)
-            for (idx, pip) in pipSnapshot.enumerated() where idx < 3 {
-                dbgFrameCount += 1
-                if dbgFrameCount % 120 == 1 { NSLog("[KinetCamera] recordFilter in=\("\(image.extent)") out=\("\(out.extent)")") }
-                let pw = out.extent.width * 0.24
-                let scaled = pip.applyingFilter("CILanczosScaleTransform", parameters: [
-                    kCIInputScaleKey: pw / pip.extent.width,
-                ])
-                let ph = scaled.extent.height
-                let x = out.extent.maxX - pw - 12
-                let y = out.extent.maxY - ph - 12 - CGFloat(idx) * (ph + 8)
-                let placed = scaled.transformed(by: CGAffineTransform(translationX: x, y: y))
-                out = placed.applyingFilter("CISourceOverCompositing", parameters: [
-                    kCIInputBackgroundImageKey: out,
-                ])
-            }
-            return out
+            guard !s.isNeutral else { return image }
+            return pipeline.apply(image, settings: s, time: time, quality: .video)
         }
         manager.startRecording()
     }

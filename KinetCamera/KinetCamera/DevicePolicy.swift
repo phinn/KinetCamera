@@ -35,6 +35,32 @@ enum DevicePolicy {
         return min(max(1.0, factor), max(1.0, upper))
     }
 
+    // MARK: - 录像时基守卫(纯决策,可单测)
+    // 423861s 成片根因:录制中设备切换,新设备帧 PTS 时基与旧设备断崖(小时级跳变),
+    // append 全部 ok=1 但成片视频轨 duration 天文数字,播放器炸。
+    // 守卫决策:与前帧 PTS 间隔落在「倒跳>0.2s」或「前跳>0.5s」(30fps 帧距 0.033s 的 15 倍)外
+    // = 时基断裂,需要重对齐 session 起点。
+
+    /// PTS 断裂判定:delta = 新帧PTS - 前帧PTS(秒)。
+    /// 正常帧距 ≈ 0.033(30fps)~0.1(网络摄掉帧);>0.5s 或倒跳超 0.2s(允许轻微重排)即断裂。
+    static func isPTSDiscontinuity(deltaSeconds: Double) -> Bool {
+        deltaSeconds < -0.2 || deltaSeconds > 0.5
+    }
+
+    /// 音频 PTS 平移后守卫:平移到视频时间轴后仍须非负(负 PTS 触发 AVAssetWriter -16364)。
+    /// 返回 nil = 丢弃该帧;返回值 = 安全 PTS。
+    static func safeAudioPTS(shiftedPTS: Double) -> Double? {
+        shiftedPTS.isFinite && shiftedPTS >= 0 ? shiftedPTS : nil
+    }
+
+    /// 帧环 PTS 独立性:合成源/屏流/真机摄多源并存时,帧环混入多时基帧会让
+    /// 夜拍"运动补偿对齐"误判位移。决策:进环前检查与前帧 PTS 间隔,
+    /// >0.5s 视为换源,丢弃旧环(防跨时基合成)。
+    static func shouldResetFrameRing(newPTS: Double, lastPTS: Double?) -> Bool {
+        guard let last = lastPTS else { return false }
+        return abs(newPTS - last) > 0.5
+    }
+
     /// 硬件变焦可用性:格式最大 zoom ≤ 1.01 视为不支持(部分 USB 摄像头/虚拟设备)。
     static func hardwareZoomAvailable(formatMaxZoom: Double) -> Bool {
         formatMaxZoom > 1.01

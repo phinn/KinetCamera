@@ -166,18 +166,27 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 等待指定设备上线:每秒重枚举,命中即切主摄;超时降级并保持后台监听,上线自动恢复。
     /// 自动化验证入口:枚举 → 等待 → 超时 → 恢复 全路径可编程触发。
+    /// 可测性:deviceProbe 闭包注入设备存在性(默认真枚举);单测/预览环境注入假序列跑四路径,
+    /// probeOn=true 时跳过 switchDevice 副作用(不重建真 session)。
+    var deviceProbe: ((String) -> Bool?)?
     func awaitDevice(id: String, timeoutAttempts: Int = 10, onOutcome: ((DeviceWaitState) -> Void)? = nil) {
         waitTimer?.invalidate()
         waitAttempts = 0
         waitTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             self.waitAttempts += 1
-            let found = self.devices.contains { $0.uniqueID == id }
+            let found: Bool
+            if let probe = self.deviceProbe {
+                guard let probed = probe(id) else { t.invalidate(); return }  // probe 返回 nil = 结束测试
+                found = probed
+            } else {
+                found = self.devices.contains { $0.uniqueID == id }
+            }
             if found {
                 t.invalidate()
                 self.deviceWaitState = .idle
                 NSLog("[KinetCamera] device %@ back online after %d s — hot-resume", id, self.waitAttempts)
-                self.switchDevice(to: id)
+                if self.deviceProbe == nil { self.switchDevice(to: id) }  // probe 模式不动真 session
                 onOutcome?(.idle)
             } else if self.waitAttempts >= timeoutAttempts {
                 t.invalidate()
@@ -532,6 +541,12 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func pushRing(_ image: CIImage, time: CMTime) {
         frameRingLock.lock()
+        // 跨时基守卫:换源(设备切换/合成源接管)后新帧 PTS 时基不同,
+        // 混环会让夜拍运动补偿对齐误判位移 → 检测到断裂直接清环重开
+        if DevicePolicy.shouldResetFrameRing(newPTS: CMTimeGetSeconds(time),
+                                             lastPTS: frameRing.last.map({ CMTimeGetSeconds($0.time) })) {
+            frameRing.removeAll()
+        }
         frameRing.append((image, time))
         if frameRing.count > frameRingCapacity { frameRing.removeFirst(frameRing.count - frameRingCapacity) }
         frameRingLock.unlock()
@@ -939,7 +954,7 @@ extension CameraManager {
             // 视为时基断裂,丢弃该帧并把 session 起点重新对齐到新时基。
             if let last = lastVideoPTS {
                 let delta = CMTimeSubtract(time, last).seconds
-                if delta < -0.2 || delta > 0.5 {
+                if DevicePolicy.isPTSDiscontinuity(deltaSeconds: delta) {
                     NSLog("[KinetCamera] video PTS jump %.3fs detected — realigning session to new device timebase", delta)
                     writer.startSession(atSourceTime: time)
                     sessionStartPTS = time
@@ -1036,10 +1051,11 @@ extension CameraManager {
         if let shift = audioPTSShift {
             var pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             pts = CMTimeSubtract(pts, shift)
-            // 防 AVAssetWriter -16364:平移后负 PTS(音频先于视频首帧到达)直接丢弃
-            if CMTimeGetSeconds(pts) < 0 {
+            // 防 AVAssetWriter -16364:平移后负 PTS/NaN(音频先于视频首帧/时钟异常)直接丢弃
+            guard let safePTS = DevicePolicy.safeAudioPTS(shiftedPTS: CMTimeGetSeconds(pts)) else {
                 return
             }
+            pts = CMTime(seconds: safePTS, preferredTimescale: pts.timescale)
             var timing = CMSampleTimingInfo(
                 duration: CMSampleBufferGetDuration(sampleBuffer),
                 presentationTimeStamp: pts,

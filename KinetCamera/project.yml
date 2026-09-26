@@ -72,3 +72,30 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         MACOSX_DEPLOYMENT_TARGET: "13.0"
         SWIFT_VERSION: "5.9"
+
+  KinetCameraiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: KinetCameraTests
+    dependencies:
+      - target: KinetCameraiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kinet.KinetCameraTests.iOS
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        SWIFT_VERSION: "5.9"
+        # iOS app 的 PRODUCT_NAME=KinetCamera(与 macOS 同名),TEST_HOST 必须指向实际 app 产物
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/KinetCamera.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/KinetCamera"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  KinetCameraiOS:
+    build:
+      targets:
+        KinetCameraiOS: all
+    test:
+      gatherCoverageData: false
+      targets:
+        - KinetCameraiOSTests

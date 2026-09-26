@@ -104,18 +104,18 @@ final class AutomationServer {
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"record-toggle\"}")
         case ("POST", "/night"):
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .kinetCaptureNight, object: nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.vm?.captureNight()   // 直调 vm:通知路径依赖 SwiftUI 场景挂载,后台启动时视图树不存活会丢
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"night\"}")
         case ("POST", "/steady"):
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .kinetCaptureSteady, object: nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.vm?.captureSteady()
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"steady\"}")
         case ("POST", "/hdr"):
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .kinetCaptureHDR, object: nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.vm?.captureHDR()
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"hdr\"}")
         case ("POST", "/burst"):

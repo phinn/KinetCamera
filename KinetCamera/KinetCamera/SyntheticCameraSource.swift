@@ -146,7 +146,10 @@ final class SyntheticCameraSource: NSObject {
             memcpy(buf, bpPtr, min(stride, bs) * height)
             // 2) 只重画移动的竖带(band 区域 = 全宽,但内容每帧平移)—— 直接重画 band 列附近最小区域不现实,
             //    但 memcpy 已铺满,只需覆盖三色带交界可辨识移动的部分。实测保留:重画整行内 band 位移列的 24px 宽条。
-            let bandX = Int(t * 8) % width
+            // band 完全静止(SAD 实测:移速 2px/帧时单帧 SAD 达 12-17 万,夜景/防抖
+            // 运动检测把 7/8 帧误弃 —— band 图案平移跨过 4px SAD 采样网格灰阶大跳)。
+            // 活性验证由 /status frameCount 承担,不靠画面移动。
+            let bandX = 0
             let bandW = 40 * 24  // 24 个采样列各间隔 40px → 连续画 960px 宽条带
             for y in 0..<height {
                 let dstRow = buf + y * stride

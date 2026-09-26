@@ -26,6 +26,12 @@ struct FilterSettings: Equatable {
 // MARK: - 实时渲染管线
 final class FilterPipeline {
 
+    /// 渲染质量档:拍照=全尺寸 CPU 焊接(一次性,画质锚点);录像=小域焊接(帧率优先)
+    enum Quality {
+        case photo
+        case video
+    }
+
     static let shared = FilterPipeline()
 
     /// Metal 加速的 CI 上下文(全程共享一个)
@@ -48,6 +54,10 @@ final class FilterPipeline {
 
     /// 实时处理入口:每帧调用
     func apply(_ input: CIImage, settings: FilterSettings, time: CMTime) -> CIImage {
+        apply(input, settings: settings, time: time, quality: .photo)
+    }
+
+    func apply(_ input: CIImage, settings: FilterSettings, time: CMTime, quality: Quality) -> CIImage {
         var image = input
 
         // 0) 手动曝光 EV(软件档): 乘法增益 2^EV,±2 EV 连续可调;
@@ -64,17 +74,18 @@ final class FilterPipeline {
         // 1) AI 人像虚化(用缓存的分割 mask)
         if settings.backgroundBlur > 0 {
             let radius = 4.0 + settings.backgroundBlur * 18.0
-            if let mask = cachedSegmentationMask(of: image) {
+            if let mask = cachedSegmentationMask(of: image, fastMode: quality == .video) {
                 let blurred = image
                     .clampedToExtent()
                     .applyingFilter("CIGaussianBlur", parameters: [
                         kCIInputRadiusKey: radius,
                     ])
                     .cropped(to: image.extent)
+                // mask 白=人像 → 取原图(保真);黑=背景 → 取糊图
                 image = blurred
                     .applyingFilter("CIBlendWithMask", parameters: [
-                        kCIInputImageKey: blurred,
-                        kCIInputBackgroundImageKey: image,
+                        kCIInputImageKey: image,
+                        kCIInputBackgroundImageKey: blurred,
                         kCIInputMaskImageKey: mask,
                     ])
             }
@@ -82,7 +93,61 @@ final class FilterPipeline {
 
         // 2) 美颜(磨皮+美白):小域 CPU 一趟 pass(导向滤波保边 + YCbCr 肤色掩膜),
         //    GPU 只做 Lanczos 升采样和掩膜混合 —— 避开 CI 色彩空间 linear/gamma 坑。
-        if settings.smoothing > 0 || settings.whitening > 0 {
+        //    录像(.video)帧率优先:全程 GPU 快速路径(CIGaussianBlur 磨皮+CI 肤色掩膜),30fps 可达。
+        if quality == .video && (settings.smoothing > 0 || settings.whitening > 0) {
+            // 磨皮:肤色掩膜内高斯(掩膜=YCbCr 肤色域 GPU 版,和 CPU 同一套容差判据)
+            if settings.smoothing > 0 {
+                let ycc = image.applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0),
+                    "inputGVector": CIVector(x: -0.168736, y: -0.331264, z: 0.5, w: 0.5),
+                    "inputBVector": CIVector(x: 0.5, y: -0.418688, z: -0.081312, w: 0.5),
+                ])
+                // Cr∈[0.33,0.48] 软窗(CPU 判据同源)
+                let skin = ycc.applyingFilter("CIColorClamp", parameters: [
+                    "inputMinComponents": CIVector(x: 0, y: 0.49, z: 0.33, w: 0),
+                    "inputMaxComponents": CIVector(x: 0, y: 0.75, z: 0.48, w: 1),
+                ]).applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: 0, y: 12.5, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 12.5, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 12.5, w: 0),
+                    "inputBiasVector": CIVector(x: 0, y: -9.25, z: -7.06, w: 0),
+                ])
+                let skinMask = skin.clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.0])
+                    .cropped(to: image.extent)
+                let blurred = image.clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [
+                        kCIInputRadiusKey: 2.0 + settings.smoothing * 6.0,
+                    ])
+                    .cropped(to: image.extent)
+                image = blurred.applyingFilter("CIBlendWithMask", parameters: [
+                    kCIInputImageKey: blurred,
+                    kCIInputBackgroundImageKey: image,
+                    kCIInputMaskImageKey: skinMask,
+                ])
+            }
+            // 美白:肤色掩膜内亮度抬升+冷白 bias(与拍照同参)
+            if settings.whitening > 0 {
+                let lift = settings.whitening
+                let bright = image.applyingFilter("CIColorControls", parameters: [
+                    kCIInputBrightnessKey: 0.05 * lift,
+                    kCIInputContrastKey: 1.0 + 0.02 * lift,
+                ]).applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 1.05, w: 0),
+                    "inputBiasVector": CIVector(x: 0, y: 0, z: 6 * lift, w: 0),
+                ])
+                // 0.85 混合:美白不完全压死原始纹理(CIBlendWithLinearAmount 0..1 连续混合)
+                image = image.applyingFilter("CIBlendWithLinearAmount", parameters: [
+                    kCIInputImageKey: bright,
+                    kCIInputBackgroundImageKey: image,
+                    "inputAmount": 0.85,
+                ])
+            }
+            image = image.cropped(to: input.extent)
+            // 锐化补偿 + 后续通用段(暗角/虚化等)继续走
+        } else if settings.smoothing > 0 || settings.whitening > 0 {
             let target: CGFloat = 360   // 小域边长(算力锚点)
             let scale = min(1.0, target / CGFloat(max(input.extent.width, input.extent.height)))
             let scaled = input.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale])
@@ -166,7 +231,10 @@ final class FilterPipeline {
                     // ---- pass 4'(全尺寸):边缘感知焊接 ----
                     // 小域降采样已把真实边界糊成坡道,小域内保边无意义;升采样后以全尺寸原图
                     // 为参照再混一次:|hf|大(真结构)→ 焊回原图;|hf|小(毛孔)→ 保留磨皮。
-                    if let upCG = renderContext.createCGImage(smoothBig, from: input.extent),
+                    if quality == .video {
+                        // 录像帧率优先:小域 CPU 焊接后直接升采样(省两次全尺寸 render)
+                        image = smoothBig
+                    } else if let upCG = renderContext.createCGImage(smoothBig, from: input.extent),
                        let (upBytes, uw, uh) = GuidedFilter.rgba(of: upCG), uw == Int(input.extent.width),
                        // 全尺寸原帧作参照:小域 bytes 的边界已被降采样糊化,不能当结构依据
                        let fullCG = renderContext.createCGImage(input, from: input.extent),
@@ -304,7 +372,7 @@ final class FilterPipeline {
     }
 
     /// 人像分割:mask 缓存 + 跳帧推理(繁忙时直接复用上一张)
-    private func cachedSegmentationMask(of image: CIImage) -> CIImage? {
+    private func cachedSegmentationMask(of image: CIImage, fastMode: Bool = false) -> CIImage? {
         segLock.lock()
         let cached = segMask
         let busy = segBusy
@@ -315,14 +383,18 @@ final class FilterPipeline {
         let cg = renderContext.createCGImage(image, from: image.extent)
         if let cg {
             let request = VNGeneratePersonSegmentationRequest()
-            request.qualityLevel = .balanced
+            // 录像帧率优先:.fast 模型(精度略降,速度×3)
+            request.qualityLevel = fastMode ? .fast : .balanced
             request.outputPixelFormat = kCVPixelFormatType_OneComponent8
             let handler = VNImageRequestHandler(cgImage: cg, options: [:])
             DispatchQueue.global(qos: .userInteractive).async { [weak self] in
                 do {
                     try handler.perform([request])
                     if let buf = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer {
+                        // Vision 分割 buffer 是底原点(倒置),CIImage(cvPixelBuffer:) 按顶原点解释,
+                        // 不翻转的话 mask 上下颠倒 → 糊了人脸保了背景(实测 IMG_2606 人脸区被糊到 15%)
                         let maskImage = CIImage(cvPixelBuffer: buf)
+                            .oriented(forExifOrientation: 4)   // 纯垂直翻转
                             .applyingFilter("CIBicubicScaleTransform", parameters: [
                                 kCIInputScaleKey: Float(image.extent.width / CGFloat(CVPixelBufferGetWidth(buf))),
                             ])

@@ -27,6 +27,9 @@ targets:
         # TCC 视为新 app 反复弹相机权限;固定证书后授权一次永久生效
         CODE_SIGN_IDENTITY: "Apple Development"
         "CODE_SIGN_INJECT_BASE_ENTITLEMENTS": YES
+        # Hardened Runtime 下 tccd 要求 entitlement com.apple.security.device.camera,
+        # 缺失时 Policy disallows prompt 静默拒绝(连弹框都不出),必须显式声明
+        CODE_SIGN_ENTITLEMENTS: KinetCamera/KinetCamera.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: KinetCamera/Info.plist

@@ -296,6 +296,7 @@ final class AutomationServer {
                 "screenFrameCount": m.screenFrameCount,
                 "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,
+                "processedFps": vm.processedFps,
                 "beauty": ["smoothing": vm.settings.smoothing, "whitening": vm.settings.whitening,
                            "brightening": vm.settings.brightening, "faceSlim": vm.settings.faceSlim,
                            "backgroundBlur": vm.settings.backgroundBlur],

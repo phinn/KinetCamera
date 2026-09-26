@@ -549,12 +549,18 @@ struct SidePanelView: View {
                                 .font(.caption.monospacedDigit()).frame(width: 38)
                         }
                         HStack {
+                            // 档位快拍:防手滑跳变,带缓动动画(痛点:变焦跳变生硬)
+                            ForEach([1.0, 2.0, 4.0, 8.0], id: \.self) { z in
+                                Button(String(format: "%g×", z)) {
+                                    vm.setZoom(z)
+                                }
+                                .font(.caption.monospacedDigit())
+                                .buttonStyle(.bordered)
+                                .tint(abs(vm.zoom - z) < 0.01 ? .accentColor : .gray)
+                            }
+                            Spacer()
                             Text(vm.zoomIsHardware ? "硬件变焦" : "软件裁切")
                                 .font(.caption2).foregroundColor(.secondary)
-                            Spacer()
-                            Button("1x") { vm.setZoom(1.0) }
-                                .font(.caption)
-                                .disabled(vm.zoom == 1.0)
                         }
                         Toggle("三分线网格", isOn: $vm.showGrid)
                             .font(.caption)

@@ -8,7 +8,7 @@
 | # | 目标项 | 状态 | 本轮实测证据 |
 |---|--------|------|-------------|
 | 1 | 拍照 | ✅ | `/capture` → PNG 落盘 97-101KB,report blur=100(归一化修复后),AI 去暖(19) 自动触发 |
-| 2 | 视频(录像) | ✅ | `/record` 双向 → h264 + aac 成片,30fps,PIP 同框烧入(上轮 7b41150),美颜 GPU 档 1.7-2.4ms/帧 |
+| 2 | 视频(录像) | ✅ 本轮挖出并修复成片损坏 | `/record` 6s → h264 1280×720 + aac 48k 实测 156 帧=26.6fps(Debug),ffprobe 全流可读,evidence/record_26fps_fixed.mov;根因链=合成源 PTS 30Hz 栅栏重复+音频 format 不匹配,均修复(12ea2e8) |
 | 3 | 美颜 | ✅ 本轮补验收+修真 bug | 真人照片 A/B(docs/evidence/beauty_ab_final.png):亮度 188→197,R-B 22.7→21.9(去黄),磨皮后干净图边缘保持 81%;**挖出并修复高频回注噪声直通 bug**(下详) |
 | 4 | AI 修正 | ✅ | report 链 before/after 全量:cast 19.5→-7.7 / exp 65.6→63.5 / blur 100,improved=true;色偏检测+白平衡增益+补锐全活 |
 | 5 | 多摄 | ✅(受硬件限) | 系统只枚举 1 路物理摄(iPhone 连续互通离线,cam_enum 实测);第 2 路屏流伪设备 PIP 双路同框照片+录像双证据;`/awaitDevice` 热恢复链 waiting→degraded→online 全通,iPhone 上线即自动接管成真 3 摄 |
@@ -60,7 +60,7 @@
 | ProRAW / RAW | ✅ | ✅ 核心卖点 | ✗ | ✗ **无 RAW 捕获** | 缺口:d AVCapturePhotoOutput rawFormat |
 | 实时美颜 | 基础 | ✗ | ✅ 主业 | ✅ 双档+量化 | 差美图级五官重塑(主动砍,不做假脸) |
 | 人像虚化 | ✅ LiDAR | ✗ | ✅ | ✅ 分割虚化 | 差景深双摄测距(无硬件) |
-| 视频 4K/ProRes | ✅ | — | — | ⚠️ 720p h264 | **真缺口**:macOS 27 session 只给 720p,待 iPhone 上线验 1080p;ProRes 列下轮 |
+| 视频 4K/ProRes | ✅ | — | — | ⚠️ 720p h264 26.6fps(Debug) | Release build 预计满 30fps;1080p 待 iPhone 上线验;ProRes 列下轮 |
 | 电影模式 | ✅ | ✗ | ✗ | ✗ | 列远期 |
 | 变焦多摄切换 | ✅ | ✅ | — | ✅ 架构+iOS 路由 | 待真机 3 摄验收 |
 | 长曝光/慢门 | ✗ | ✅ | ✗ | ✗(夜景合成可衍生) | 列下轮:帧环已有,堆栈逻辑 80% 复用 |

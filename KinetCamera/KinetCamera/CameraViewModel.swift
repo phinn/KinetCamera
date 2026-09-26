@@ -257,8 +257,8 @@ final class CameraViewModel: ObservableObject {
         let s = settings
         let pipeline = self.pipeline
         // 帧环 = 最近 2s 实拍历史(含手抖/运动),取末尾 N 帧合成
-        guard let frames = manager.recentFrames(mode.frameCount) else {
-            lastSavedPath = "\(mode.label)失败:帧环不足(\(manager.ringCount)/\(mode.frameCount))"
+        guard let frames = manager.recentFrames(mode.frameCount * 2) else {
+            lastSavedPath = "\(mode.label)失败:帧环不足(\(manager.ringCount)/\(mode.frameCount * 2))"
             compositeInFlight = false
             return
         }
@@ -270,12 +270,24 @@ final class CameraViewModel: ObservableObject {
 
     fileprivate func processComposite(_ frames: [(image: CIImage, time: CMTime)], mode: CompositeMode, settings s: FilterSettings, pipeline: FilterPipeline) async {
         let ctx = pipeline.renderContext
-        let filtered = frames.map { pipeline.apply($0.image, settings: s, time: .zero) }
-        let cgs = filtered.compactMap { ctx.createCGImage($0, from: $0.extent) }
-        guard cgs.count == mode.frameCount else {
-            await MainActor.run { [weak self] in self?.lastSavedPath = "\(mode.label)失败:帧解码失败(\(cgs.count)/\(mode.frameCount))" }
+        // 夜拍/防抖痛点:快门按下瞬间手可能还在动,盲取末尾 N 帧会把"运动中最糊的帧"合成进去
+        // (165005 样本失败根因)。策略:多取一倍候选帧,解码后按 Laplacian 锐度分选最锐的 N 帧,
+        // 把"运动中"的帧从源头筛掉,再做时域平均。
+        let candidateCount = mode.frameCount * 2
+        let pool = frames.count >= candidateCount ? Array(frames.suffix(candidateCount)) : frames
+        let scored: [(cg: CGImage, score: Double)] = pool.compactMap { f in
+            guard let cg = ctx.createCGImage(pipeline.apply(f.image, settings: s, time: .zero), from: f.image.extent) else { return nil }
+            return (cg, AIAnalyzer.sharpnessScore(cgImage: cg))
+        }
+        guard scored.count >= mode.frameCount else {
+            await MainActor.run { [weak self] in self?.lastSavedPath = "\(mode.label)失败:帧解码失败(\(scored.count)/\(mode.frameCount))" }
             return
         }
+        // 锐度降序取前 N;若最高分 < 25(全糊),照常合成但报告里如实标注
+        let picked = scored.sorted { $0.score > $1.score }.prefix(mode.frameCount).map { $0.cg }
+        let cgs = Array(picked)
+        let sharpest = scored.map { $0.score }.max() ?? 0
+        let frameSel = "选帧:候选\(scored.count)取\(mode.frameCount),最锐\(Int(sharpest))"
 
         if mode == .hdr {
             // HDR:堆栈降噪 + 阴影恢复 + 高光软肩
@@ -313,8 +325,8 @@ final class CameraViewModel: ObservableObject {
         let analysis = AIAnalyzer.analyze(composedCI, context: ctx)
         var final = composedCI
         var applied = mode == .night
-            ? ["\(cgs.count)帧时域平均", "运动补偿对齐", "夜景增益x\(mode.gain)"]
-            : ["\(cgs.count)帧对齐平均", "搜索窗±\(mode.maxShift)px", "对齐残差\(String(format: "%.3f", comp.residual))→未对齐\(String(format: "%.3f", comp.naiveResidual))"]
+            ? ["\(cgs.count)帧时域平均", "运动补偿对齐", "夜景增益x\(mode.gain)", frameSel]
+            : ["\(cgs.count)帧对齐平均", "搜索窗±\(mode.maxShift)px", "对齐残差\(String(format: "%.3f", comp.residual))→未对齐\(String(format: "%.3f", comp.naiveResidual))", frameSel]
         if comp.dropped > 0 { applied.append("弃运动帧\(comp.dropped)") }
         if analysis.blurScore < 55 || abs(analysis.colorCast) >= 8 || abs(analysis.exposureBias) > 0.18 {
             let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)

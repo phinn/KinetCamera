@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>KinetCamera</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -12,26 +14,26 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>KinetCamera</string>
-	<key>CFBundleDisplayName</key>
-	<string>KinetCamera</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.photography</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>KinetCamera 需要访问摄像头进行拍照、录像和 AI 画面分析。所有数据仅保存在本机。</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>KinetCamera 需要访问麦克风以录制带声音的视频。</string>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.photography</string>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>KinetCamera 需要访问麦克风以录制带声音的视频。</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>KinetCamera 需要屏幕录制权限来把屏幕画面作为画中画第二路信号源(人+桌面同框)</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 </dict>

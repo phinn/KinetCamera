@@ -1,4 +1,5 @@
 import AVFoundation
+import ScreenCaptureKit
 import CoreImage
 import AppKit
 
@@ -704,6 +705,7 @@ final class ScreenSourceController: NSObject {
     var onFrame: ((String, CIImage) -> Void)?
     private var stream: CGDisplayStream?
     private(set) var isActive = false
+    private(set) var frameCount = 0
     private var lastError = ""
 
     /// deviceIDs 里含 kinet.screen.0 → 开屏流,否则关
@@ -713,7 +715,17 @@ final class ScreenSourceController: NSObject {
         else if !want, isActive { stop() }
     }
 
-    var statusMessage: String { isActive ? "屏流运行中" : (lastError.isEmpty ? "未启动" : lastError) }
+    var statusMessage: String {
+        isActive ? "屏流运行中 已收\(frameCount)帧" : (lastError.isEmpty ? "未启动" : lastError)
+    }
+
+    /// 触发屏幕录制 TCC 授权弹框。
+    /// CGDisplayStream 无授权时静默零帧,只有 ScreenCaptureKit 的内容查询会让系统弹框。
+    private func requestAuthorization() {
+        if #available(macOS 12.3, *) {
+            Task { _ = (try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)) }
+        }
+    }
 
     private func start() {
         guard stream == nil else { return }
@@ -729,6 +741,7 @@ final class ScreenSourceController: NSObject {
             queue: DispatchQueue(label: "com.kinet.camera.screensrc"),
             handler: { [weak self] _, _, ioSurface, _ in
                 guard let self, let ioSurface = ioSurface else { return }
+                self.frameCount += 1
                 self.onFrame?(ScreenSourceController.id, CIImage(ioSurface: ioSurface))
             }) else {
             lastError = "CGDisplayStream 创建失败"
@@ -738,6 +751,11 @@ final class ScreenSourceController: NSObject {
         s.start()
         isActive = true
         lastError = ""
+        // 起流后 2 秒零帧 → 八成没授权,主动唤起系统弹框
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.isActive, self.frameCount == 0 else { return }
+            self.requestAuthorization()
+        }
     }
 
     private func stop() {

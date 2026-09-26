@@ -46,6 +46,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var sessionStartAligned = false
     private var sessionStartPTS = CMTime.zero       // 视频首帧 PTS(会话时间轴原点)
+    private var lastVideoPTS: CMTime?               // 上一视频帧 PTS(录制中时基断裂检测)
     private var audioPTSShift: CMTime?              // 麦克风时钟 → 会话时间轴 的平移量
     private var recordStartRealtime: Date?
     private var recordTimer: Timer?
@@ -444,8 +445,17 @@ final class CameraManager: NSObject, ObservableObject {
 
         guard let mainID = activeDeviceID,
               let mainDevice = devices.first(where: { $0.uniqueID == mainID }),
-              let input = try? AVCaptureDeviceInput(device: mainDevice) else {
+              mainDevice.isConnected else {
             DispatchQueue.main.async { self.lastError = "未找到可用摄像头" }
+            return
+        }
+        // 坑:设备断开瞬间(如iPhone连续互通断连)AVCaptureDeviceInput(device:) 抛的是
+        // NSException 而非 Swift Error —— try? 捕不住,直接崩 app(实测 20:16:14 崩溃)。
+        // 预检 isConnected 把失效设备挡在 init 之外。
+        let input: AVCaptureDeviceInput
+        do { input = try AVCaptureDeviceInput(device: mainDevice) }
+        catch {
+            DispatchQueue.main.async { self.lastError = "摄像头输入创建失败(设备可能已断开)" }
             return
         }
         if session.canAddInput(input) { session.addInput(input) }
@@ -493,6 +503,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 已授权状态下把麦克风挂进会话(须在 sessionQueue 上调用)
     private func addMicLocked(_ mic: AVCaptureDevice) {
         if session.inputs.contains(where: { ($0 as? AVCaptureDeviceInput)?.device == mic }) { return }
+        guard mic.isConnected else { return }   // 断开设备 init 抛 NSException(try?捕不住),预检挡掉
         if let micInput = try? AVCaptureDeviceInput(device: mic) {
             if session.canAddInput(micInput) { session.addInput(micInput) }
             audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
@@ -817,6 +828,7 @@ extension CameraManager {
             self.pixelBufferAdaptor = adaptor
             self.movieURL = url
             self.sessionStartAligned = false
+            self.lastVideoPTS = nil
             self.audioPTSShift = nil
             self.audioInputAppended = false
             self.recordStartRealtime = Date()
@@ -900,7 +912,12 @@ extension CameraManager {
     private func writeVideoFrame(_ src: CVPixelBuffer, time: CMTime) {
         guard let writer = assetWriter,
               writer.status == .writing,
-              let input = videoInput else { return }
+              let input = videoInput else {
+            if isRecording, videoFrames % 30 == 0 {
+                NSLog("[KinetCamera] writeVideoFrame skip: writer=\(assetWriter != nil) status=\(assetWriter?.status.rawValue ?? -1) input=\(videoInput != nil) frames=\(videoFrames)")
+            }
+            return
+        }
         guard input.isReadyForMoreMediaData else {
             droppedAtRecord &+= 1
             if droppedAtRecord % 60 == 1 {
@@ -913,7 +930,23 @@ extension CameraManager {
             writer.startSession(atSourceTime: time)   // 只调一次,对齐第一帧 PTS
             sessionStartAligned = true
             sessionStartPTS = time
+            lastVideoPTS = time
             audioPTSShift = nil
+        } else {
+            // PTS 连续性守卫:录制中切换设备(内置摄↔iPhone连续互通)后,新设备帧的 PTS 时基
+            // 与旧设备完全不同步 —— 实测切换后 append ok=1 全部成功,但 PTS 断崖
+            // (成片视频轨 duration 423861s ≈ 4.9 天,播放器炸)。守卫:与前帧间隔 >0.5s
+            // 视为时基断裂,丢弃该帧并把 session 起点重新对齐到新时基。
+            if let last = lastVideoPTS {
+                let delta = CMTimeSubtract(time, last).seconds
+                if delta < -0.2 || delta > 0.5 {
+                    NSLog("[KinetCamera] video PTS jump %.3fs detected — realigning session to new device timebase", delta)
+                    writer.startSession(atSourceTime: time)
+                    sessionStartPTS = time
+                    audioPTSShift = nil
+                }
+            }
+            lastVideoPTS = time
         }
 
         var outBuffer: CVPixelBuffer? = src
@@ -1071,6 +1104,7 @@ final class PIPController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             // 新增
             for id in ids where self.rigs[id] == nil {
                 guard let device = devices.first(where: { $0.uniqueID == id }),
+                      device.isConnected,   // 断开设备 init 抛 NSException(try?捕不住),预检挡掉
                       let input = try? AVCaptureDeviceInput(device: device) else { continue }
                 let sess = AVCaptureSession()
                 sess.beginConfiguration()

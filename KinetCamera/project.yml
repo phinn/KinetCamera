@@ -17,6 +17,8 @@ targets:
     platform: macOS
     sources:
       - path: KinetCamera
+        excludes:
+          - "Assets.xcassets"               # macOS 用 iconset(Xcode 自动转 icns),xcassets 归 iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kinet.KinetCamera
@@ -45,6 +47,8 @@ targets:
         excludes:
           - "SyntheticCameraSource.swift"   # 合成源依赖 CGDisplayStream(macOS only)
           - "Info.plist"                    # macOS 版 plist,防 Multiple commands produce
+          - "Resources"                     # icns 归 macOS
+      - path: KinetCamera/Assets.xcassets   # iOS 图标(appiconset 单 1024)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kinet.KinetCamera.iOS
@@ -58,6 +62,7 @@ targets:
         MARKETING_VERSION: 1.0.0
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   KinetCameraTests:
     type: bundle.unit-test

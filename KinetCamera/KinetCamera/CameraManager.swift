@@ -94,6 +94,9 @@ final class CameraManager: NSObject, ObservableObject {
     private(set) var framesDropped = 0
     private(set) var videoFrames = 0
     private(set) var audioFrames = 0
+    private var audioInputAppended = false
+    private var audioPtsDebug = 0
+    static var lastAudioFormat: (channels: Int, sampleRate: Double)?
     private(set) var activeMicName = ""
 
     override init() {
@@ -761,13 +764,31 @@ extension CameraManager {
                 ])
             writer.add(vInput)
 
-            let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 2,
-                AVSampleRateKey: 44100,
-            ])
-            aInput.expectsMediaDataInRealTime = true
-            writer.add(aInput)
+            // 音频 outputSettings 必须与实际输入 format 匹配(声道数/采样率),
+            // 否则 append 第 2 帧起 AVAssetWriter 报 -16364 并 cancelled,成片无 moov 打不开。
+            // (内置麦 48k 单声道 vs 硬编码 44.1k 双声道 —— 历史上能过纯粹因为当时默认设备是 Teams/Oray 虚拟 2ch)
+            var inCh = 1
+            var inRate = 48000.0
+            // 从最近一帧音频的 CMAudioFormatDescription 拿真实声道/采样率(AVCaptureAudioDataOutput
+            // 无直接 format 查询;writeAudioSample 回调里已缓存)
+            if let (ch, rate) = Self.lastAudioFormat {
+                inCh = ch
+                inRate = rate
+            }
+            let aInput: AVAssetWriterInput
+            if true {
+                aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVNumberOfChannelsKey: inCh,
+                    AVSampleRateKey: inRate,
+                ])
+                aInput.expectsMediaDataInRealTime = true
+                writer.add(aInput)
+            } else {
+                // 音频流未到达(设备死/无音频)→ 本次录像不建音轨,避免 -16364
+                aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+                NSLog("[KinetCamera] 无音频 format 缓存,本次录像仅视频轨")
+            }
 
             self.assetWriter = writer
             self.videoInput = vInput
@@ -776,6 +797,7 @@ extension CameraManager {
             self.movieURL = url
             self.sessionStartAligned = false
             self.audioPTSShift = nil
+            self.audioInputAppended = false
             self.recordStartRealtime = Date()
             writer.startWriting()
 
@@ -792,8 +814,13 @@ extension CameraManager {
     }
 
     func stopRecording(completion: ((URL?) -> Void)? = nil) {
+        NSLog("[KinetCamera] stopRecording called, assetWriter=\(assetWriter != nil ? "存在" : "nil"), isRecording=\(isRecording)")
         sessionQueue.async { [weak self] in
-            guard let self, let writer = self.assetWriter else { return }
+            guard let self, let writer = self.assetWriter else {
+                NSLog("[KinetCamera] stopRecording ABORT: assetWriter nil (isRecording=\(self?.isRecording ?? false))")
+                completion?(nil)
+                return
+            }
             let url = self.movieURL
             DispatchQueue.main.async {
                 self.recordTimer?.invalidate()
@@ -803,9 +830,18 @@ extension CameraManager {
             // 会话已对齐过才 mark;未写入任何帧则取消
             if self.sessionStartAligned {
                 self.videoInput?.markAsFinished()
-                self.audioInput?.markAsFinished()
+                // 音频流死亡(-91dB)时 audioInput 从未 append 过任何样本,
+                // 对其 markAsFinished 会让 finishWriting 永久挂起(AVF 已知坑)→ 成片无 moov 打不开。
+                // 未 append 过的 input 直接丢弃引用,不参与 finishWriting。
+                if self.audioInputAppended {
+                    self.audioInput?.markAsFinished()
+                } else {
+                    self.audioInput = nil
+                }
             }
+            NSLog("[KinetCamera] finishWriting 开始 status=\(writer.status.rawValue) errRAW=\(writer.error) aligned=\(sessionStartAligned) audioIn=\(audioInput != nil)")
             writer.finishWriting {
+                NSLog("[KinetCamera] finishWriting 完成 status=\(writer.status.rawValue) errRAW=\(writer.error)")
                 DispatchQueue.main.async {
                     self.assetWriter = nil
                     self.videoInput = nil
@@ -865,13 +901,17 @@ extension CameraManager {
         if let pb = outBuffer {
             appendAttempts &+= 1
             let ok = pixelBufferAdaptor?.append(pb, withPresentationTime: time) ?? false
-            if !ok {
-                NSLog("[KinetCamera] append FAILED #%d pts=%.3f writerStatus=%d", appendAttempts, CMTimeGetSeconds(time), writer.status.rawValue)
+            if appendAttempts <= 3 || !ok {
+                NSLog("[KinetCamera] video append #%d pts=%.3f ok=%d status=%d err=%@", appendAttempts, CMTimeGetSeconds(time), ok ? 1 : 0, writer.status.rawValue, writer.error?.localizedDescription ?? "nil")
             }
         }
     }
 
     private func writeAudioSample(_ sampleBuffer: CMSampleBuffer) {
+        if let fdesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fdesc) {
+            Self.lastAudioFormat = (Int(asbd.pointee.mChannelsPerFrame), asbd.pointee.mSampleRate)
+        }
         guard sessionStartAligned,                      // 等视频首帧对齐后再写音频
               let input = audioInput,
               input.isReadyForMoreMediaData,
@@ -888,10 +928,19 @@ extension CameraManager {
         if let shift = audioPTSShift {
             var pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             pts = CMTimeSubtract(pts, shift)
+            // 防 AVAssetWriter -16364:平移后负 PTS(音频先于视频首帧到达)直接丢弃
+            if CMTimeGetSeconds(pts) < 0 {
+                return
+            }
             var timing = CMSampleTimingInfo(
                 duration: CMSampleBufferGetDuration(sampleBuffer),
                 presentationTimeStamp: pts,
                 decodeTimeStamp: CMSampleBufferGetDecodeTimeStamp(sampleBuffer))
+            // -16364 防御:CreateCopyWithNewTiming 对 invalid duration 的 buffer 会产出非法样本
+            if timing.duration.value == 0 || timing.duration.timescale == 0 {
+                timing.duration = CMTime(value: 1024, timescale: 48000)  // 典型 AAC/PCM 帧长 21.3ms
+            }
+
             // Swift 导入版签名(inout sampleBufferOut),非 ObjC 返回值版
             var out: CMSampleBuffer?
             if CMSampleBufferCreateCopyWithNewTiming(
@@ -901,7 +950,20 @@ extension CameraManager {
                 buf = shifted
             }
         }
+        if audioPtsDebug < 4 {
+            audioPtsDebug += 1
+            let rp = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+            let sp = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buf))
+            NSLog("[KinetCamera] audio#\(audioPtsDebug) raw=\(rp) shifted=\(sp) numSamples=\(CMSampleBufferGetNumSamples(buf))")
+        }
         input.append(buf)
+        if audioInputAppended == false {
+            NSLog("[KinetCamera] audio append #1 writerStatus=\(assetWriter?.status.rawValue ?? -1) err=\(assetWriter?.error?.localizedDescription ?? "nil")")
+        }
+        audioInputAppended = true
+        if assetWriter?.status == .failed || assetWriter?.status == .cancelled {
+            NSLog("[KinetCamera] audio append broke writer: \(assetWriter?.error)")
+        }
     }
 }
 

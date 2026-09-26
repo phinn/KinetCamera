@@ -157,11 +157,16 @@ final class FilterPipeline {
                     "inputBVector": CIVector(x: 0, y: 0, z: 1.05, w: 0),
                     "inputBiasVector": CIVector(x: 0, y: 0, z: 6 * lift, w: 0),
                 ])
-                // 0.85 混合:美白不完全压死原始纹理(CIBlendWithLinearAmount 0..1 连续混合)
-                image = image.applyingFilter("CIBlendWithLinearAmount", parameters: [
+                // 0.85 混合:美白不完全压死原始纹理。
+                // 不用 CIBlendWithLinearAmount / CISourceOverCompositing —— macOS 27 上二者
+                // 对被 CIBlendWithMask 处理过的图求值返回空 extent(step_bench 实测归零)。
+                // 常数灰 mask + CIBlendWithMask 等价于 amount 混合,已验证可行。
+                let constMask = CIImage(color: CIColor(red: 0.85, green: 0.85, blue: 0.85))
+                    .cropped(to: image.extent)
+                image = image.applyingFilter("CIBlendWithMask", parameters: [
                     kCIInputImageKey: bright,
                     kCIInputBackgroundImageKey: image,
-                    "inputAmount": 0.85,
+                    kCIInputMaskImageKey: constMask,
                 ])
             }
             image = image.cropped(to: input.extent)

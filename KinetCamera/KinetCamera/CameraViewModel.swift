@@ -60,7 +60,10 @@ final class CameraViewModel: ObservableObject {
 
     // MARK: - 帧处理(videoQueue 调用)
     fileprivate nonisolated func handleFrame(_ raw: CIImage) {
-        let filtered = pipeline.apply(raw, settings: settings, time: .zero)
+        // 预览走 .video GPU 快速档(与录像同路径,30fps 可达):
+        // .photo 档的全尺寸导向滤波 CPU pass 在预览路径会把帧率压到 7-14fps(实测)。
+        // 拍照/回溯/连拍落盘仍走各自显式的 .photo 全画质链(170/245/335 行),互不影响。
+        let filtered = pipeline.apply(raw, settings: settings, time: .zero, quality: .video)
         frameCount &+= 1
         let view = renderView
         DispatchQueue.main.async {

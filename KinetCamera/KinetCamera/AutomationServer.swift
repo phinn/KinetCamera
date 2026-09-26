@@ -293,6 +293,8 @@ final class AutomationServer {
                 "screenFrameCount": m.screenFrameCount,
                 "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,
+                "audioSilentWarning": vm.audioSilentWarning,
+                "lastVideoAudioSilent": vm.lastVideoAudioSilent,
                 "blur": (vm.lastAnalysis.blurScore * 10).rounded() / 10,
                 "exposure": (vm.lastAnalysis.exposureScore * 10).rounded() / 10,
                 "composition": (vm.lastAnalysis.exposureScore * 10).rounded() / 10,

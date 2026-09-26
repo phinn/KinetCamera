@@ -213,6 +213,17 @@ struct HUDView: View {
                     Text(timeString(vm.manager.recordingSeconds))
                         .font(.system(.body, design: .monospaced))
                         .foregroundColor(.red)
+                    // 录音静音实时告警:持续 ≥3s 无声音输入时出现
+                    if vm.audioSilentWarning {
+                        HStack(spacing: 3) {
+                            Image(systemName: "speaker.slash.fill")
+                            Text("静音")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .help("麦克风无声音输入,请检查输入设备或系统声音设置")
+                        .transition(.opacity)
+                    }
                 }
             }
 

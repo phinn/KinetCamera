@@ -13,6 +13,8 @@ final class CameraViewModel: ObservableObject {
     @Published var lastAnalysis = AIAnalysis.empty
     @Published var showGrid = true
     @Published var lastCaptureReport: CaptureReport?
+    @Published var audioSilentWarning = false      // 录音静音告警(录制中实时)
+    @Published var lastVideoAudioSilent = false    // 上段录像成片是否静音(JSON 打标用)
 
     private weak var renderView: CIRenderView?
     private var analysisInFlight = false
@@ -43,6 +45,11 @@ final class CameraViewModel: ObservableObject {
         // 软件变焦桥:manager 决定走软件档时回调这里写滤镜链设置
         manager.onSoftwareZoom = { [weak self] z in
             self?.settings.softwareZoom = z
+        }
+        // 录音静音实时告警:录制中持续 ≥3s 静音 → UI 徽标 + 自动化可查
+        manager.onSilentAudio = { [weak self] silent, _ in
+            self?.audioSilentWarning = silent
+            NSLog("[KinetCamera] 录音静音告警: \(silent ? "进入静音" : "恢复有声")")
         }
         // 自动化美颜接口
         NotificationCenter.default.addObserver(
@@ -385,7 +392,23 @@ final class CameraViewModel: ObservableObject {
 
     func stopRecording() {
         manager.stopRecording { [weak self] url in
-            self?.lastSavedPath = url.map { "视频已保存 \($0.path)" } ?? "录像保存失败"
+            guard let self else { return }
+            // 成片音频打标:静音检测终值写入伴生 JSON(与照片 CaptureReport 同目录同命名)
+            self.lastVideoAudioSilent = self.manager.lastRecordingAudioSilent
+            if let url, let peak = self.manager.lastRecordingAudioPeak as Double? {
+                let report: [String: Any] = [
+                    "audioSilent": self.lastVideoAudioSilent,
+                    "audioPeak": peak,
+                    "audioPeakDB": peak > 0 ? 20 * log10(peak) : -200.0,
+                    "note": self.lastVideoAudioSilent
+                        ? "音轨静音:采集源无声音输入(录制中已实时告警)"
+                        : "音轨正常",
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) {
+                    try? data.write(to: url.deletingPathExtension().appendingPathExtension("audio.json"))
+                }
+            }
+            self.lastSavedPath = url.map { "视频已保存 \($0.path)\(self.lastVideoAudioSilent ? " ⚠️音轨静音" : "")" } ?? "录像保存失败"
         }
     }
 

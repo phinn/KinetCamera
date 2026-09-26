@@ -99,6 +99,24 @@ final class CameraManager: NSObject, ObservableObject {
     static var lastAudioFormat: (channels: Int, sampleRate: Double)?
     private(set) var activeMicName = ""
 
+    // MARK: 录音实时静音检测(所见即所闻防线:静音当场告警,不留到回放才发现)
+    struct AudioRecordingStats {
+        var sampleTotal = 0          // 累计样本数
+        var peak: Float = 0          // 录制全程峰值
+        var silentSeconds = 0.0      // 当前连续静音时长(峰值 ≤ -60dB 记为静音)
+        var hasEverHadSound = false  // 是否出现过真实声音(区分"一直静音"vs"中途静音")
+        var flagged = false          // 本次录制是否已告警(一次录制只弹一次)
+    }
+    private(set) var audioStats = AudioRecordingStats()
+    /// 录音静音告警回调(主线程):silent=true 进入静音,silent=false 恢复有声
+    var onSilentAudio: ((Bool, Double) -> Void)?
+    private var audioStatsQueue = DispatchQueue(label: "com.kinet.camera.audiostats")
+    private static let silenceThreshold: Float = 0.001   // ≈ -60dB
+
+    /// 录音静音监测入口(录制结束后调用,返回给 JSON 打标)
+    private(set) var lastRecordingAudioSilent: Bool = false
+    private(set) var lastRecordingAudioPeak: Double = 0
+
     override init() {
         super.init()
         refreshDevices()
@@ -744,6 +762,9 @@ extension CameraManager {
             formatter.dateFormat = "yyyyMMdd-HHmmss"
             let url = dir.appendingPathComponent("KinetCamera-\(formatter.string(from: Date())).mov")
 
+            // 录音静音检测状态归零
+            audioStatsQueue.async { self.audioStats = AudioRecordingStats() }
+
             guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else {
                 DispatchQueue.main.async { self.lastError = "无法创建录像文件" }
                 return
@@ -815,6 +836,18 @@ extension CameraManager {
 
     func stopRecording(completion: ((URL?) -> Void)? = nil) {
         NSLog("[KinetCamera] stopRecording called, assetWriter=\(assetWriter != nil ? "存在" : "nil"), isRecording=\(isRecording)")
+        // 静音检测终值快照(录制收尾时给成片打标)
+        audioStatsQueue.async { [weak self] in
+            guard let self else { return }
+            let peak = self.audioStats.peak
+            let silent = peak <= Self.silenceThreshold
+            let samples = self.audioStats.sampleTotal
+            DispatchQueue.main.async {
+                self.lastRecordingAudioSilent = silent
+                self.lastRecordingAudioPeak = Double(peak)
+            }
+            NSLog("[KinetCamera] audioStats final: samples=\(samples) peak=\(peak) silent=\(silent)")
+        }
         sessionQueue.async { [weak self] in
             guard let self, let writer = self.assetWriter else {
                 NSLog("[KinetCamera] stopRecording ABORT: assetWriter nil (isRecording=\(self?.isRecording ?? false))")
@@ -911,6 +944,48 @@ extension CameraManager {
         if let fdesc = CMSampleBufferGetFormatDescription(sampleBuffer),
            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fdesc) {
             Self.lastAudioFormat = (Int(asbd.pointee.mChannelsPerFrame), asbd.pointee.mSampleRate)
+        }
+        // 实时静音检测:从 PCM 数据取峰值(vDSP),累计静音时长,超阈值告警一次
+        if let fdesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+           CMFormatDescriptionGetMediaType(fdesc) == kCMMediaType_Audio,
+           let block = CMSampleBufferGetDataBuffer(sampleBuffer) {
+            let length = CMBlockBufferGetDataLength(block)
+            if length > 0 {
+                let bytes = UnsafeMutableRawPointer.allocate(byteCount: length, alignment: 16)
+                defer { bytes.deallocate() }
+                if CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: bytes) == noErr {
+                    let floats = bytes.bindMemory(to: Float.self, capacity: length / 4)
+                    let n = length / 4
+                    if n > 0 {
+                        var chunkPeak: Float = 0
+                        for i in 0..<n where abs(floats[i]) > chunkPeak { chunkPeak = abs(floats[i]) }
+                        audioStatsQueue.async { [weak self] in
+                            guard let self else { return }
+                            self.audioStats.sampleTotal += n
+                            if chunkPeak > self.audioStats.peak { self.audioStats.peak = chunkPeak }
+                            let asbd = Self.lastAudioFormat
+                            let sr = asbd?.sampleRate ?? 48000
+                            let chunkSeconds = Double(n) / sr
+                            if chunkPeak > Self.silenceThreshold {
+                                self.audioStats.hasEverHadSound = true
+                                if self.audioStats.silentSeconds > 0 {
+                                    self.audioStats.silentSeconds = 0
+                                    if self.audioStats.flagged {
+                                        DispatchQueue.main.async { self.onSilentAudio?(false, Double(chunkPeak)) }
+                                    }
+                                }
+                            } else {
+                                self.audioStats.silentSeconds += chunkSeconds
+                                // 持续 ≥3s 静音 → 告警一次(整个录制周期只弹一次)
+                                if self.audioStats.silentSeconds >= 3.0 && !self.audioStats.flagged {
+                                    self.audioStats.flagged = true
+                                    DispatchQueue.main.async { self.onSilentAudio?(true, Double(self.audioStats.peak)) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         guard sessionStartAligned,                      // 等视频首帧对齐后再写音频
               let input = audioInput,

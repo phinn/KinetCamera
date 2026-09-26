@@ -139,10 +139,13 @@ enum AIAnalyzer {
         vDSP_svesq(centered, 1, &variance, vDSP_Length(w * h))
         variance /= Float(w * h)
 
-        // 归一化像素(0-1)换算回 0-255 域再映射:variance_255 = variance_01 * 255²
-        // 经验映射:0-255 域 variance 0→0分,>400→100分
+        // 归一化像素(0-1)换算回 0-255 域。注意 toGray 已下采样到 ≤512 边,
+        // 下采样后高频能量按比例衰减,512 域实测:清晰 raw ≈ 250,轻度糊 ≈ 150,重度糊 < 60。
+        // 旧系数 /400 是全分辨率域经验值,导致真实照片全挤 0-0.7 分、UI 显示"清晰度0"、
+        // 且 blurScore<55 的修正触发条件恒真(每张都强制走修正链)。
+        // 新系数 /2.5:512 域 250(清晰)→100 分,150(轻糊)→60,60(重糊)→24。
         let variance255 = Double(variance) * 255.0 * 255.0
-        let score = min(max(variance255 / 400.0, 0), 100)
+        let score = min(max(variance255 / 2.5, 0), 100)
         return score
     }
 

@@ -40,6 +40,10 @@ final class CameraViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // 软件变焦桥:manager 决定走软件档时回调这里写滤镜链设置
+        manager.onSoftwareZoom = { [weak self] z in
+            self?.settings.softwareZoom = z
+        }
         // 自动化美颜接口
         NotificationCenter.default.addObserver(
             forName: Notification.Name("kinetSetBeauty"), object: nil, queue: .main
@@ -155,7 +159,7 @@ final class CameraViewModel: ObservableObject {
 
         // 低分 → AI 修正落成片(修正前后都会重打分留证)
         // 美颜纳入修正链:人脸在场即触发质感兜底(用户显式开磨皮时 AIAnalyzer 内自动跳过防双重涂抹)
-        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || analysis.faceCount > 0 {
+        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || analysis.faceCount > 0 || abs(analysis.colorCast) >= 8 {
             let corrected = AIAnalyzer.autoCorrect(raw, analysis: analysis, userSmoothing: beauty.smoothing)
             finalImage = corrected.image
             applied += corrected.appliedNames   // 追加不覆盖:保留前面的 PIP同框 标记
@@ -168,7 +172,7 @@ final class CameraViewModel: ObservableObject {
 
         let url = CameraManager.savePNG(image: finalImage)
 
-        // 修正效果复打分(before/after 同帧硬证据,写进伴生 JSON)
+        // 修正效果复打分(before/after 同帧硬证据,写进伴生 JSON;含色偏复测)
         let after = AIAnalyzer.rescore(finalImage, context: ctx)
         let report = CaptureReport(
             beforeBlur: (analysis.blurScore * 10).rounded() / 10,
@@ -177,7 +181,9 @@ final class CameraViewModel: ObservableObject {
             afterExposure: (after.exposure * 10).rounded() / 10,
             applied: applied,
             improved: after.blur >= analysis.blurScore && abs(after.exposure - 50) <= abs(analysis.exposureScore - 50),
-            faceCount: analysis.faceCount)
+            faceCount: analysis.faceCount,
+            beforeColorCast: (analysis.colorCast * 10).rounded() / 10,
+            afterColorCast: (after.colorCast * 10).rounded() / 10)
         if let url, let data = try? JSONEncoder().encode(report) {
             try? data.write(to: url.deletingPathExtension().appendingPathExtension("json"))
         }
@@ -230,7 +236,7 @@ final class CameraViewModel: ObservableObject {
         }
         Task.detached(priority: .userInitiated) { [weak self] in
             await self?.processComposite(frames, mode: mode, settings: s, pipeline: pipeline)
-            await MainActor.run { self?.compositeInFlight = false }
+            await MainActor.run { [weak self] in self?.compositeInFlight = false }
         }
     }
 
@@ -282,7 +288,7 @@ final class CameraViewModel: ObservableObject {
             ? ["\(cgs.count)帧时域平均", "运动补偿对齐", "夜景增益x\(mode.gain)"]
             : ["\(cgs.count)帧对齐平均", "搜索窗±\(mode.maxShift)px", "对齐残差\(String(format: "%.3f", comp.residual))→未对齐\(String(format: "%.3f", comp.naiveResidual))"]
         if comp.dropped > 0 { applied.append("弃运动帧\(comp.dropped)") }
-        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 {
+        if analysis.blurScore < 55 || analysis.exposureScore < 42 || analysis.exposureScore > 78 || abs(analysis.colorCast) >= 8 {
             let (fixed, fixes) = AIAnalyzer.autoCorrect(composedCI, analysis: analysis)
             final = fixed
             applied += fixes
@@ -296,7 +302,9 @@ final class CameraViewModel: ObservableObject {
             afterExposure: (after.exposure * 10).rounded() / 10,
             applied: applied,
             improved: after.exposure > analysis.exposureScore || abs(after.exposure - 50) < abs(analysis.exposureScore - 50),
-            faceCount: analysis.faceCount)
+            faceCount: analysis.faceCount,
+            beforeColorCast: (analysis.colorCast * 10).rounded() / 10,
+            afterColorCast: (after.colorCast * 10).rounded() / 10)
         if let url, let data = try? JSONEncoder().encode(report) {
             try? data.write(to: url.deletingPathExtension().appendingPathExtension("json"))
         }
@@ -376,4 +384,14 @@ final class CameraViewModel: ObservableObject {
     func setFocusPeaking(_ on: Bool) {
         settings.focusPeaking = on ? 0.8 : 0
     }
+
+    // MARK: - 变焦(硬件优先,软件兜底,互斥路由)
+    /// UI/自动化统一入口。硬件档直接动 device.videoZoomFactor;
+    /// 合成源/屏流/无硬件 zoom 设备走滤镜链中心裁切,预览录像拍照所见即所得。
+    func setZoom(_ factor: Double) {
+        manager.setZoom(factor)
+        // 软件档由 manager 回调 onSoftwareZoom 写 settings(挂桥在 init)
+    }
+    var zoom: Double { manager.zoomFactor }
+    var zoomIsHardware: Bool { manager.zoomIsHardware }
 }

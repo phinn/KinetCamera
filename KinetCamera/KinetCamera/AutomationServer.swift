@@ -123,6 +123,18 @@ final class AutomationServer {
                 NotificationCenter.default.post(name: .kinetCaptureBurst, object: nil)
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"burst\"}")
+        case ("POST", "/zoom"):
+            // 变焦: /zoom?f=2.5 (硬件 zoomFactor 优先,软件裁切兜底) / /zoom?f=1 复位
+            var f = 1.0
+            if let r = target.range(of: "f=") {
+                let s = target[r.upperBound...].components(separatedBy: "&").first ?? ""
+                f = Double(s) ?? 1.0
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { return }
+                vm.setZoom(f)
+            }
+            reply(conn, json: "{\"ok\":true,\"zoom\":\(f)}")
         case ("POST", "/aelock"):
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .kinetToggleAELock, object: nil)
@@ -300,10 +312,14 @@ final class AutomationServer {
                 "drawState": vm.renderDrawState,
                 "ringCount": m.ringCount,
                 "aeLocked": m.isAELocked,
+                "zoom": m.zoomFactor,
+                "zoomMode": m.zoomIsHardware ? "hardware" : "software",
+                "colorCast": (vm.lastAnalysis.colorCast * 10).rounded() / 10,
                 "pipFrames": vm.pipFrames.map { "\($0.key):\($0.value.extent.width)x\(Int($0.value.extent.height))" },
                 "lastReport": vm.lastCaptureReport.map {
                     ["beforeBlur": $0.beforeBlur, "afterBlur": $0.afterBlur,
                      "beforeExp": $0.beforeExposure, "afterExp": $0.afterExposure,
+                     "beforeCast": $0.beforeColorCast, "afterCast": $0.afterColorCast,
                      "applied": $0.applied.joined(separator: ","), "improved": $0.improved] as [String: Any]
                 } ?? [:],
             ]

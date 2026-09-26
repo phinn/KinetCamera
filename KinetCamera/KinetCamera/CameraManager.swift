@@ -108,6 +108,25 @@ final class CameraManager: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.refreshDevices() }
     }
 
+    /// denied 状态下的授权看门狗:2s 轮询一次,用户在系统设置开闸后自动出画。
+    /// 授权成功或 app 退出时自毁。
+    private var authWatchdog: Timer?
+    func startAuthWatchdog() {
+        guard authWatchdog == nil else { return }
+        authWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            DispatchQueue.main.async {
+                if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
+                    t.invalidate()
+                    self.authWatchdog = nil
+                    self.authorizationDenied = false
+                    self.refreshDevices()
+                    NSLog("[KinetCamera] camera authorization granted via watchdog, rebuilding session")
+                }
+            }
+        }
+    }
+
     /// 设备离线状态机:枚举 → 在线即接管 → 离线重试 → 超时降级 → 上线热恢复。
     /// 覆盖 iPhone 连续互通相机(解锁才广播、锁屏即离线)的完整生命周期。
     enum DeviceWaitState: Equatable {
@@ -214,6 +233,11 @@ final class CameraManager: NSObject, ObservableObject {
                     if granted { self?.rebuildAndRun() }
                 }
             }
+        case .denied:
+            authorizationDenied = true
+            // 自愈:用户可能在系统设置里翻开关;授权状态变化不能靠 notification(denied 时收不到),
+            // 定时轮询,变授权即自动重建会话,免去手动重启 app
+            startAuthWatchdog()
         default:
             authorizationDenied = true
         }
@@ -254,11 +278,88 @@ final class CameraManager: NSObject, ObservableObject {
         #endif
     }
 
-    /// 切换主摄(录像中禁止,避免写坏文件)
+    /// 切换主摄(录像中禁止,避免写坏文件)。
+    /// 守卫决策收敛在 DevicePolicy(可单测):录像禁切/同设备 no-op/离线目标拒绝。
     func switchDevice(to id: String) {
-        guard !isRecording, id != activeDeviceID else { return }
+        let live = devices.map { $0.uniqueID }
+        guard DevicePolicy.canSwitch(isRecording: isRecording,
+                                     current: activeDeviceID,
+                                     target: id,
+                                     liveDevices: live) else {
+            if isRecording, id != activeDeviceID {
+                NSLog("[KinetCamera] switch rejected: recording in progress")
+            }
+            return
+        }
         activeDeviceID = id            // 主线程改 @Published
+        resetZoomForDeviceChange()     // 换镜头变焦回 1x,防旧倍率套新镜头
         rebuildAndRun()
+    }
+
+    // MARK: - 变焦(硬件 zoomFactor 优先,软件裁切兜底;预览/拍照/录像同一路径)
+
+    /// 当前有效变焦倍数(对外状态,UI/接口读)
+    @Published private(set) var zoomFactor: Double = 1.0
+    /// 当前设备是否走硬件变焦
+    @Published private(set) var zoomIsHardware = false
+
+    /// 软件变焦档单写桥(vm 启动时挂):CameraManager 不持有 FilterSettings,
+    /// 只在需要软件变焦时回调 vm 写 settings(主线程,单向,无引用环)
+    var onSoftwareZoom: ((Double) -> Void)?
+
+    /// 设变焦倍数。iOS → 硬件 device.videoZoomFactor(实时零开销);
+    /// macOS(API 不存在)→ settings.softwareZoom 走滤镜链中心裁切,全设备统一。
+    /// 两者互斥,由 resetZoomForDeviceChange 路由,绝不叠加。
+    func setZoom(_ factor: Double) {
+        guard !isRecording else { return }   // 录像中变焦会跳帧,禁(与切换同守卫)
+        let clamped = DevicePolicy.clampZoom(factor, formatMax: activeFormatMaxZoom())
+        zoomFactor = clamped
+        #if os(iOS)
+        if zoomIsHardware, let device = activeMainDevice {
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clamped
+                device.unlockForConfiguration()
+            } catch {
+                NSLog("[KinetCamera] zoom lockForConfiguration failed: \(error.localizedDescription)")
+            }
+            return
+        }
+        #endif
+        DispatchQueue.main.async { [weak self] in
+            self?.onSoftwareZoom?(clamped)   // 软件档:回调 vm 写 settings,走滤镜链裁切
+        }
+    }
+
+    /// 换镜头/换源后重算变焦路由:硬件可用则迁移当前倍率到 videoZoomFactor,否则回 1x
+    private func resetZoomForDeviceChange() {
+        #if os(iOS)
+        let hw = DevicePolicy.hardwareZoomAvailable(formatMaxZoom: activeFormatMaxZoom())
+        #else
+        let hw = false   // macOS 无 videoZoomFactor API,一律软件档
+        #endif
+        zoomIsHardware = hw
+        let carry = hw ? zoomFactor : 1.0
+        if !hw { DispatchQueue.main.async { [weak self] in self?.onSoftwareZoom?(1.0) } }
+        zoomFactor = carry
+        #if os(iOS)
+        if hw, let device = activeMainDevice {
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = carry
+                device.unlockForConfiguration()
+            } catch { NSLog("[KinetCamera] zoom migrate failed: \(error.localizedDescription)") }
+        }
+        #endif
+    }
+
+    private func activeFormatMaxZoom() -> Double {
+        #if os(iOS)
+        guard let d = activeMainDevice else { return 1.0 }
+        return d.activeFormat.videoMaxZoomFactor
+        #else
+        return 1.0   // macOS 无硬件变焦 API,软件档上限由 DevicePolicy 画质红线兜底
+        #endif
     }
 
     /// 主摄 ↔ 画中画

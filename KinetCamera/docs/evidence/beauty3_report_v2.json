@@ -1,0 +1,37 @@
+{
+ "before": {
+  "hf_energy": 11.95,
+  "weak_noise": 9.83,
+  "luma": 193.9,
+  "warm_R-B": 73.9,
+  "bg_wall": 71.9
+ },
+ "smoothing07": {
+  "hf_energy": 3.67,
+  "weak_noise": 3.03,
+  "luma": 192.1,
+  "warm_R-B": 71.2,
+  "bg_wall": 71.4
+ },
+ "whitening06": {
+  "hf_energy": 5.47,
+  "weak_noise": 4.72,
+  "luma": 195.1,
+  "warm_R-B": 67.6,
+  "bg_wall": 71.4
+ },
+ "full": {
+  "hf_energy": 4.8,
+  "weak_noise": 4.15,
+  "luma": 194.2,
+  "warm_R-B": 66.4,
+  "bg_wall": 71.4
+ },
+ "derived": {
+  "smoothing_denoise": "weak_noise 9.83→3.03 (压噪 69.2%), hf 11.95→3.67",
+  "smoothing_luma_shift": -1.8,
+  "whitening_skin": "luma 193.9→195.1 (+1.1999999999999886), R-B 73.9→67.6 (去黄)",
+  "whitening_bg_check": "背景墙 71.9→71.4 (Δ=-0.5) —— 应≈0(掩膜外不动)",
+  "full": "压噪 57.8%, luma +0.29999999999998295, R-B -7.5"
+ }
+}

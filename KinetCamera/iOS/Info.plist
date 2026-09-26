@@ -32,6 +32,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>KinetCamera 需要访问摄像头进行拍照、录像和 AI 画面分析。所有数据仅保存在本机。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>KinetCamera 在本地网络提供自动化控制接口(端口 17877),用于多摄实录验收与远程控制。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>KinetCamera 需要访问麦克风以录制带声音的视频。</string>
 	<key>UILaunchScreen</key>

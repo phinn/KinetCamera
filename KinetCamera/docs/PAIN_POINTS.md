@@ -69,4 +69,13 @@
 | 13 | **广角自拍脸变形**(边缘人脸拉伸/鼓出,前置广角重灾区) | fisheyeHint(人脸贴边+宽高比异常)触发自写 CPU 径向位移场反向桶形校正(CIBulgeDistortion 在 macOS27 全灭,自写不受 CI 回归影响) | 数学闭环:+0.16 预桶形残差 98.34→校正 19.13(压回 80.5%);轻度宁欠勿过(盲校过修会把直门框修弯) | ✅ 已闭环 |
 | 14 | **录完视频才发现没声音**(系统相机静音录音完才傻眼) | 录音实时静音检测:逐块取 PCM 峰值,≤-60dB 持续 3s 当场 UI 告警(speaker.slash 静音徽标);成片 audio.json 打标(audioSilent/peak/peakDB) | 全零音轨环境端到端:录制中 audioSilentWarning=true 实时触发,成片 audio.json {audioSilent:true, audioPeakDB:-200} | ✅ 已闭环 |
 
-**痛点累计:14 条,13 闭环带证据,1 半闭环(分享:无损 PNG 保底,分享面板判伪需求砍掉)。**
+## 痛点清单增补(09-27,视频专项四条)
+
+| # | 痛点 | 解法 | 实测证据 | 状态 |
+|---|------|------|---------|------|
+| 15 | **录着录着悄悄坏了**(成片比实录短/快放/后半段全丢,导出才发现) | 时基三守卫:合成源墙钟 PTS(timescale 900)防美颜降速压缩时长;isPTSDiscontinuity 摄位切换豁免窗口防误重对齐;每分钟采样 dropped/rec 监视 | 30s 美颜录 30.235s 零压缩;20s 切 3 次镜头成片 19.86s 无跳段;10 分钟长录 600.70s、dropped=0、会话不断(docs/evidence/longrec_10min_trend.log) | ✅ 已闭环 |
+| 16 | **拍视频切镜头黑屏/丢段**(多摄切换瞬间画面冻结或成片缺一截) | 切换走 /synthLens//switch 同语义路由 + PTS 豁免;模拟器 6 次切换 0.03-0.08s 无黑屏 | 切换耗时实测表见 VIDEO_SPEC_E2E_20260927.md;真机 MultiCam 带宽档待插线补 | ⚖️ 半闭环(逻辑+模拟器证,真机带宽数字待补) |
+| 17 | **想拍 4K60 结果交 1080p**(档位虚标/静默降档) | RecordingQuality 显式档(hd1080p30/uhd4k60):fps/minWidth/sessionPreset 三维语义 + /video?preset= 稳定契约;档位语义单测钉死 | VideoSpecTests 6 用例(枚举语义/映射/rawValue 契约/zoom clamp/PTS 阈值),58 全绿 | ✅ 已闭环(逻辑层;真机 4K60 实拍带宽数字待插线补) |
+| 18 | **照片换个设备看颜色就变**(无 ICC 跨设备色彩漂移;EXIF 裸奔没 Make/Model) | savePhoto 落盘前 rebindToP3()(零重采样拷入 Display P3,ImageIO 自动嵌 ICC);EXIF Make/Model 设备缺失时兜底自证字段 | 字节级验证:APP2 ICC_PROFILE 段在,header appl/mntr/RGB/XYZ v4,desc=Display P3(mluc UTF-16BE 解出);Make=KinetCamera Virtual Camera(模拟器)/Apple(真机) | ✅ 已闭环 |
+
+**痛点累计:18 条,16 闭环带证据,2 半闭环(#7 分享面板砍掉、#16 真机带宽数字待插线)。**

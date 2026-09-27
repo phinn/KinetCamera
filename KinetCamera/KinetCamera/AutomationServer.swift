@@ -134,6 +134,15 @@ final class AutomationServer {
                     self.reply(conn, json: "{\"ok\":true,\"action\":\"record-toggle\"}")
                 }
             }
+        case ("POST", "/aicorrect"), ("POST", "/ai_fix"), ("POST", "/auto"):
+            // AI 修正显式开关(此前只有拍照链内隐式生效,三路由全 404)。
+            // 语义:on=1/缺省=开(拍照自动暗光增强/补锐/降噪),on=0=关(纯手动零干预)。
+            // GET /status 的 autoAdapt 字段回读。
+            let on = !target.contains("on=0")
+            DispatchQueue.main.async { [weak self] in
+                self?.vm?.autoAdapt = on
+            }
+            reply(conn, json: "{\"ok\":true,\"aicorrect\":\(on ? 1 : 0)}")
         case ("POST", "/night"):
             DispatchQueue.main.async { [weak self] in
                 self?.vm?.captureNight()   // 直调 vm:通知路径依赖 SwiftUI 场景挂载,后台启动时视图树不存活会丢
@@ -470,6 +479,7 @@ final class AutomationServer {
                 "showGrid": vm.showGrid,
                 "horizonAngle": vm.horizonAngle,
                 "zoomIsHardware": vm.zoomIsHardware,
+                "zoomLens": vm.manager.zoomLensDescription,
                 "beauty": ["smoothing": vm.settings.smoothing, "whitening": vm.settings.whitening,
                            "brightening": vm.settings.brightening, "faceSlim": vm.settings.faceSlim,
                            "backgroundBlur": vm.settings.backgroundBlur, "sharpen": vm.settings.sharpen],

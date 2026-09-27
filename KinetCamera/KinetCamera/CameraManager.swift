@@ -300,6 +300,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
         #else
         types.append(contentsOf: [.builtInUltraWideCamera, .builtInTelephotoCamera, .builtInTrueDepthCamera])
+        // B3 连续变焦:聚合 virtual device(triple/dualWide/dual)入列 —— 对它设 videoZoomFactor
+        // 系统自动跨物理摄位接力(uw→wide→tele),画面零跳变(官方便捷通路,无需手写切换)
+        types.append(contentsOf: [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera])
         if #available(iOS 17.0, *) { types.append(.external) }
         #endif
         let discovery = AVCaptureDevice.DiscoverySession(
@@ -324,7 +327,18 @@ final class CameraManager: NSObject, ObservableObject {
             NSLog("[KinetCamera] PIP devices went offline, removed: %@", deadPIP.joined(separator: ","))
         }
         if activeDeviceID == nil || !devices.contains(where: { $0.uniqueID == activeDeviceID }) {
+            #if os(iOS)
+            // B3:默认选聚合 virtual(三摄>双广>双摄>单广)——连续变焦全摄位可用
+            func rank(_ d: AVCaptureDevice) -> Int {
+                if d.deviceType == .builtInTripleCamera { return DevicePolicy.virtualZoomRank(deviceType: "BuiltInTripleCamera") }
+                if d.deviceType == .builtInDualWideCamera { return DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualWideCamera") }
+                if d.deviceType == .builtInDualCamera { return DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualCamera") }
+                return DevicePolicy.virtualZoomRank(deviceType: "other")
+            }
+            activeDeviceID = devices.min { (rank($0), $0.uniqueID) < (rank($1), $1.uniqueID) }?.uniqueID
+            #else
             activeDeviceID = devices.first?.uniqueID
+            #endif
         }
 
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -493,6 +507,20 @@ final class CameraManager: NSObject, ObservableObject {
                 device.unlockForConfiguration()
             } catch { NSLog("[KinetCamera] zoom migrate failed: \(error.localizedDescription)") }
         }
+        #endif
+    }
+
+    /// B3:当前变焦摄位描述。virtual device 上系统自动跨摄位接力,
+    /// 这里按 zoomFactor 区间粗报(virtual min=1x;≥5x 视为长焦域,精确切换点以机型为准)。
+    var zoomLensDescription: String {
+        #if os(iOS)
+        guard zoomIsHardware, let d = activeMainDevice else { return "software" }
+        let isVirtual = d.deviceType == .builtInTripleCamera
+            || d.deviceType == .builtInDualWideCamera
+            || d.deviceType == .builtInDualCamera
+        return DevicePolicy.zoomLensDescription(zoomFactor: zoomFactor, isVirtual: isVirtual, isHardware: zoomIsHardware)
+        #else
+        return "software"
         #endif
     }
 

@@ -67,4 +67,24 @@ enum DevicePolicy {
     static func hardwareZoomAvailable(formatMaxZoom: Double) -> Bool {
         formatMaxZoom > 1.01
     }
+
+    /// B3 聚合摄位选择:设备类型名 → virtual 优先级(越小越优先;非 virtual = 3)。
+    /// triple > dualWide > dual > 单摄。CameraManager 默认主摄用它,保证连续变焦全摄位可用。
+    static func virtualZoomRank(deviceType: String) -> Int {
+        switch deviceType {
+        case "BuiltInTripleCamera": return 0
+        case "BuiltInDualWideCamera": return 1
+        case "BuiltInDualCamera": return 2
+        default: return 3
+        }
+    }
+
+    /// B3 摄位描述:virtual 设备按 zoomFactor 区间报物理摄位(系统接力的粗判)。
+    static func zoomLensDescription(zoomFactor: Double, isVirtual: Bool, isHardware: Bool) -> String {
+        guard isHardware else { return "software" }
+        guard isVirtual else { return "single" }
+        if zoomFactor < 1.0 { return "ultrawide" }
+        if zoomFactor >= 5.0 { return "telephoto" }
+        return "wide"
+    }
 }

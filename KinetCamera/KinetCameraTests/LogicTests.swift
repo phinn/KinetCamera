@@ -213,3 +213,26 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertEqual(CorrectionEngine.clamp01(1.5), 1)
     }
 }
+
+// MARK: - B3 连续变焦(virtual 摄位接力)策略
+final class VirtualZoomPolicyTests: XCTestCase {
+    func testVirtualRankOrder() {
+        XCTAssertLessThan(DevicePolicy.virtualZoomRank(deviceType: "BuiltInTripleCamera"),
+                          DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualWideCamera"))
+        XCTAssertLessThan(DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualWideCamera"),
+                          DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualCamera"))
+        XCTAssertLessThan(DevicePolicy.virtualZoomRank(deviceType: "BuiltInDualCamera"),
+                          DevicePolicy.virtualZoomRank(deviceType: "BuiltInWideAngleCamera"))
+        XCTAssertEqual(DevicePolicy.virtualZoomRank(deviceType: "anything"), 3)
+    }
+    func testZoomLensDescription() {
+        // 软件档恒 software;单摄恒 single
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 3, isVirtual: false, isHardware: false), "software")
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 3, isVirtual: false, isHardware: true), "single")
+        // virtual 按区间:<1 超广 / [1,5) 主摄 / ≥5 长焦
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 0.9, isVirtual: true, isHardware: true), "ultrawide")
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 1.0, isVirtual: true, isHardware: true), "wide")
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 4.9, isVirtual: true, isHardware: true), "wide")
+        XCTAssertEqual(DevicePolicy.zoomLensDescription(zoomFactor: 5.0, isVirtual: true, isHardware: true), "telephoto")
+    }
+}

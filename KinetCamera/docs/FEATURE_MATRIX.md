@@ -16,7 +16,8 @@
 | iPhone 三摄位切换(超广角/长焦) | ❌ | — | iOS 侧 AVFoundation multisource;Continuity 只透出主摄位,需 iOS app 桥或 Cable 直连枚举 |
 | iOS 多摄并发(AVCaptureMultiCamSession) | ✅代码 / 🟡待真机 | 主 session+PIP 子会话均条件建 MultiCamSession(isMultiCamSupported 运行时探测,iPhone XS+);preset 走 .inputPriority(input.activeFormat 定分辨率);双端编译过 | 真机前后双摄并发跑通+录双轨验证 |
 | 真多轨录像(双视频流同文件) | ✅ | ffprobe: v1920x1080@30 + v960x540@14.8 双流各自抽帧;辅轨实时性两刻像素差2.22(09-26 22:55,docs/MULTITRACK_EXIF_20260926.md) | 辅轨上限3路,真机多摄各自一轨 |
-| 拍照 EXIF 回填 | ✅ | CGImageSource 直读:DateTimeOriginal/Digitized/LensMake/LensModel/ExposureProgram/WhiteBalance+TIFF Software;JPEG q0.95+PNG 保底同戳 | ISO/快门/光圈 macOS 平台墙留空,iOS 写真值 |
+| 拍照 EXIF 回填 | ✅ | CGImageSource 直读:DateTimeOriginal/Digitized/LensMake/LensModel/ExposureProgram/WhiteBalance+TIFF Software;JPEG q0.95+PNG 保底同戳;设备缺失态 Make/Model 兜底"KinetCamera Virtual Camera" | ISO/快门/光圈 macOS 平台墙留空,iOS 写真值 |
+| JPEG ICC Display P3 | ✅ | savePhoto rebindToP3 零重采样,ImageIO 嵌源空间 ICC;字节级验证 APP2 ICC_PROFILE + mluc desc="Display P3" | — |
 
 ## 二、视频录制
 
@@ -25,7 +26,11 @@
 | h264+aac 录像 | ✅ | 本轮 ffprobe:3.83s,h264 1280x720 30fps + aac | — |
 | 录像实时美颜烧入 | ✅ | video_beauty_ab.png 99.8% 像素差异 | — |
 | PIP 烧入录像 | 🗑️ 已删 | 被"真多轨"替代:辅摄独立视频轨(不烧主画面),FCP/PR 可拆轨多机位 | 拍照 PIP 同框保留 |
-| 变焦 zoomFactor | ❌ UI 有按钮(1x),vm.setZoom 在;数码变焦仅内置摄 | 需实装 videoZoomFactor 档位表 | 上轮遗留 |
+| 变焦 zoomFactor | ✅ | 档位收敛实测:f=2→2.0 / f=99→8.0(qualityMax/formatMax 双 clamp);硬件直动 videoZoomFactor,合成源/软件裁切链预览录像拍照所见即所得;24 帧 easeOutCubic 缓动 | 三摄位快捷档 UI 已在 CameraTopBar(0.5×/1×/5×,真机 lensCandidates + 合成源双分支) |
+| 录像质量档 4K60 | ✅ | RecordingQuality hd1080p30/uhd4k60,/video?preset= 契约,VideoSpecTests 6 用例(58 全绿);真机 4K60 带宽实测待插线 | 真机实测 |
+| 录制中切镜头(PTS 豁免) | ✅ | 20s 录制切 3 摄位成片 19.86s 无跳段;切换耗时 0.03-0.08s | — |
+| 10 分钟长录 | ✅ | 600.70s dropped=0 全程 53.5MB(longrec_10min_trend.log) | — |
+| 后台中断守卫 | ✅ | resignActive 录制中自动安全收尾+backgroundInterruptedDuringRecord 标记 | 真机前后台复验 |
 | 音频静音告警 | ✅ | 本轮 /status audioSilentWarning:true(Oray 驱动环境) | — |
 
 ## 三、AI 修正(链尾自动 → **本轮已升级为可见可控的面板**,见"二·AI 修正面板"节)

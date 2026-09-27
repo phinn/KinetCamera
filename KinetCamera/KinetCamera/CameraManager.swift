@@ -136,6 +136,8 @@ final class CameraManager: NSObject, ObservableObject {
     private(set) var framesDelivered = 0
     private(set) var droppedAtRecord = 0
     private(set) var appendAttempts = 0
+    private(set) var videoAppendFailures = 0
+    private(set) var lastAppendErrorCode: Int = -1
     private(set) var framesDropped = 0
     private(set) var videoFrames = 0
     private(set) var audioFrames = 0
@@ -160,6 +162,10 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 录音静音监测入口(录制结束后调用,返回给 JSON 打标)
     private(set) var lastRecordingAudioSilent: Bool = false
+    /// 录像诊断:最近一次成片 URL(含失败态)与 finishWriting 状态码,/status 暴露
+    private(set) var lastRecordingURL: String?
+    private(set) var lastRecordingFinishStatus: Int = -1
+    private(set) var lastRecordingError: String?
     private(set) var lastRecordingAudioPeak: Double = 0
 
     override init() {
@@ -933,9 +939,25 @@ extension CameraManager {
         sessionQueue.async { [weak self] in
             guard let self, !self.isRecording else { return }
 
-            let dir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("KinetCamera", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // macOS:~/Movies/KinetCamera;iOS 沙盒禁写系统 Movies 目录(实测权限拒绝),
+            // 落 app 沙盒 Documents/Movies/KinetCamera(devicectl copy from 可拉回)
+            #if os(macOS)
+            let baseDir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+            #else
+            let baseDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Movies", isDirectory: true)
+            #endif
+            let dir = baseDir.appendingPathComponent("KinetCamera", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                DispatchQueue.main.async {
+                    self.lastRecordingFinishStatus = -3
+                    self.lastRecordingError = "createDirectory: \(error.localizedDescription)"
+                    self.lastRecordingURL = dir.path
+                }
+                return
+            }
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd-HHmmss"
             let url = dir.appendingPathComponent("KinetCamera-\(formatter.string(from: Date())).mov")
@@ -944,7 +966,12 @@ extension CameraManager {
             audioStatsQueue.async { self.audioStats = AudioRecordingStats() }
 
             guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else {
-                DispatchQueue.main.async { self.lastError = "无法创建录像文件" }
+                DispatchQueue.main.async {
+                    self.lastError = "无法创建录像文件"
+                    self.lastRecordingURL = url.path
+                    self.lastRecordingFinishStatus = -2
+                    self.lastRecordingError = "AVAssetWriter init failed"
+                }
                 return
             }
             let dims = self.currentVideoDimensions()
@@ -1029,6 +1056,15 @@ extension CameraManager {
             self.audioInputAppended = false
             self.recordStartRealtime = Date()
             writer.startWriting()
+            if writer.status == .failed {
+                let err = writer.error?.localizedDescription ?? "nil"
+                NSLog("[KinetCamera] startWriting FAILED: \(err)")
+                DispatchQueue.main.async {
+                    self.lastRecordingFinishStatus = -4
+                    self.lastRecordingError = "startWriting: \(err)"
+                }
+                return
+            }
 
             DispatchQueue.main.async {
                 self.isRecording = true
@@ -1093,8 +1129,12 @@ extension CameraManager {
             }
             NSLog("[KinetCamera] finishWriting 开始 status=\(writer.status.rawValue) errRAW=\(writer.error) aligned=\(sessionStartAligned) audioIn=\(audioInput != nil)")
             writer.finishWriting {
-                NSLog("[KinetCamera] finishWriting 完成 status=\(writer.status.rawValue) errRAW=\(writer.error)")
+                let urlPath = url?.path ?? "nil"
+                NSLog("[KinetCamera] finishWriting 完成 status=\(writer.status.rawValue) errRAW=\(writer.error) url=\(urlPath)")
                 DispatchQueue.main.async {
+                    self.lastRecordingURL = urlPath
+                    self.lastRecordingFinishStatus = writer.status.rawValue
+                    self.lastRecordingError = writer.error?.localizedDescription
                     self.assetWriter = nil
                     self.videoInput = nil
                     self.audioInput = nil
@@ -1194,7 +1234,7 @@ extension CameraManager {
         guard input.isReadyForMoreMediaData else {
             droppedAtRecord &+= 1
             if droppedAtRecord % 60 == 1 {
-                NSLog("[KinetCamera] record drop total=%d (isReadyForMoreMediaData=false)", droppedAtRecord)
+                NSLog("[KinetCamera] record drop total=\(droppedAtRecord) (isReadyForMoreMediaData=false)")
             }
             return
         }
@@ -1240,8 +1280,14 @@ extension CameraManager {
         if let pb = outBuffer {
             appendAttempts &+= 1
             let ok = pixelBufferAdaptor?.append(pb, withPresentationTime: time) ?? false
+            if !ok {
+                videoAppendFailures &+= 1
+                if writer.status == .failed, let err = writer.error as NSError? {
+                    lastAppendErrorCode = err.code
+                }
+            }
             if appendAttempts <= 3 || !ok {
-                NSLog("[KinetCamera] video append #%d pts=%.3f ok=%d status=%d err=%@", appendAttempts, CMTimeGetSeconds(time), ok ? 1 : 0, writer.status.rawValue, writer.error?.localizedDescription ?? "nil")
+                NSLog("[KinetCamera] video append #\(appendAttempts) pts=\(CMTimeGetSeconds(time)) ok=\(ok) status=\(writer.status.rawValue) err=\(writer.error?.localizedDescription ?? "nil")")
             }
         }
     }

@@ -166,3 +166,47 @@ final class AICorrectionTests: XCTestCase {
         XCTAssertGreaterThan(px[1], 200, "中心像素应为绿色(裁切放大后中心=原中心绿块), got R\(px[0]) G\(px[1]) B\(px[2])")
     }
 }
+
+// MARK: - CorrectionEngine 场景自适应规则(2026-09-27)
+final class CorrectionEngineTests: XCTestCase {
+    func testDarkSceneBoostsSmoothingAndSharpen() {
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.15, blurScore: 60, smoothing: 0.5)
+        XCTAssertTrue(adj.smoothingDelta > 0)
+        XCTAssertTrue(adj.sharpenDelta > 0)
+        XCTAssertFalse(adj.reason.isEmpty)
+    }
+    func testDarkSceneNoSmoothingNoIntervention() {
+        // 用户磨皮全关 = 明确意图,自动档不介入
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.10, blurScore: 60, smoothing: 0.0)
+        XCTAssertEqual(adj.smoothingDelta, 0)
+        XCTAssertEqual(adj.sharpenDelta, 0)
+        XCTAssertTrue(adj.isNeutral)
+    }
+    func testBrightSceneReducesSmoothing() {
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.85, blurScore: 70, smoothing: 0.6)
+        XCTAssertTrue(adj.smoothingDelta < 0, "强光应减磨皮保质感")
+    }
+    func testBrightSceneSmallSmoothingNoTouch() {
+        // 磨皮本来就很低(≤0.3)时不画蛇添足
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.85, blurScore: 70, smoothing: 0.2)
+        XCTAssertTrue(adj.isNeutral)
+    }
+    func testBlurryFrameAddsSharpen() {
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.5, blurScore: 12, smoothing: 0.5)
+        XCTAssertTrue(adj.sharpenDelta > 0)
+    }
+    func testNormalSceneNeutral() {
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.5, blurScore: 60, smoothing: 0.5)
+        XCTAssertTrue(adj.isNeutral)
+    }
+    func testDeltaCapped() {
+        // 极暗场景磨皮增量封顶 0.15
+        let adj = CorrectionEngine.autoAdjust(brightness: 0.0, blurScore: 60, smoothing: 0.8)
+        XCTAssertLessThanOrEqual(adj.smoothingDelta, 0.15)
+    }
+    func testClamp01() {
+        XCTAssertEqual(CorrectionEngine.clamp01(-0.5), 0)
+        XCTAssertEqual(CorrectionEngine.clamp01(0.5), 0.5)
+        XCTAssertEqual(CorrectionEngine.clamp01(1.5), 1)
+    }
+}

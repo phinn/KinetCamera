@@ -101,19 +101,19 @@ struct ContentView: View {
         .onOpenURL { url in
             // kinetcamera:// 真机验收控制面:devicectl process openURL 即可驱动,
             // 不依赖端口转发(USB 无 iproxy 时唯一的远程控制通道)
-            print("[KinetDeepLink] received: \(url.absoluteString)")
+            NSLog("[KinetDeepLink] onOpenURL: %@", url.absoluteString)
             Self.handleDeepLink(url, vm: vm)
         }
         .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
             // 兜底:Universal Link / 冷启动场景 onOpenURL 丢事件时走这里
             if let url = activity.webpageURL {
-                print("[KinetDeepLink] via NSUserActivity: \(url.absoluteString)")
+                NSLog("[KinetDeepLink] via NSUserActivity: %@", url.absoluteString)
                 Self.handleDeepLink(url, vm: vm)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("kinetDeepLink"))) { note in
             if let url = note.object as? URL {
-                print("[KinetDeepLink] via AppDelegate: \(url.absoluteString)")
+                NSLog("[KinetDeepLink] via AppDelegate: %@", url.absoluteString)
                 Self.handleDeepLink(url, vm: vm)
             }
         }
@@ -249,7 +249,7 @@ final class KinetAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ app: UIApplication,
                      open url: URL,
                      options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-        print("[KinetDeepLink] AppDelegate open: \(url.absoluteString)")
+        NSLog("[KinetDeepLink] AppDelegate open: %@", url.absoluteString)
         NotificationCenter.default.post(
             name: Notification.Name("kinetDeepLink"), object: url)
         return true

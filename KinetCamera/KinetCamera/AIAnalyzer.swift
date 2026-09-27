@@ -57,6 +57,18 @@ enum AICorrectionKind: String, CaseIterable, Codable {
 /// 拍后体检:拉普拉斯方差测糊 + 亮度直方图测曝光 + Vision 人脸构图。
 /// 全部 vDSP 加速,毫秒级,后台线程跑。
 enum AIAnalyzer {
+    /// 后台分析专用 CIContext:analyze 在 utility Task 跑,原共享 FilterPipeline.renderContext
+    /// 会与主线程 draw / videoQueue 美颜链互等 CIContext 内部锁(模拟器软渲染下 UI 卡实测)。
+    static let analysisContext: CIContext = {
+        if let dev = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: dev, options: [
+                .cacheIntermediates: false,
+                .workingColorSpace: NSNull(),
+            ])
+        }
+        return CIContext(options: [.cacheIntermediates: false])
+    }()
+
 
     static func analyze(_ image: CIImage, context: CIContext) -> AIAnalysis {
         var result = AIAnalysis.empty

@@ -109,7 +109,7 @@ final class CameraViewModel: ObservableObject {
         // AI 实时体检:每 30 帧一次(约 1s)
         if frameCount % 30 == 0 && !analysisInFlight {
             analysisInFlight = true
-            let ctx = pipeline.renderContext
+            let ctx = AIAnalyzer.analysisContext
             Task.detached(priority: .utility) { [weak self] in
                 let result = AIAnalyzer.analyze(filtered, context: ctx)
                 await MainActor.run { [weak self] in

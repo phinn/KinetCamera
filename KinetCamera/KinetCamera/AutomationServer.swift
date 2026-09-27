@@ -216,6 +216,29 @@ final class AutomationServer {
                 vm.captureRetro()
                 self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\"}")
             }
+        case ("POST", "/synthLens"):
+            // /synthLens?lens=uw|wide|tele —— 合成源回退态的虚拟摄位切换(模拟器无源验收链)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                guard vm.manager.synthFallbackActive else {
+                    self.reply(conn, json: "{\"error\":\"synthetic fallback not active\"}", status: "409 Conflict")
+                    return
+                }
+                let lens = target.range(of: "lens=").map { String(target[$0.upperBound...]).components(separatedBy: "&").first ?? "" } ?? ""
+                let kind: SyntheticLensKind?
+                switch lens {
+                case "uw": kind = .ultrawide
+                case "wide": kind = .wide
+                case "tele": kind = .tele
+                default: kind = nil
+                }
+                guard let k = kind else {
+                    self.reply(conn, json: "{\"error\":\"bad lens, expect uw|wide|tele\"}", status: "400 Bad Request")
+                    return
+                }
+                vm.manager.switchSynthLens(k)
+                self.reply(conn, json: "{\"ok\":true,\"lens\":\"\(lens)\",\"active\":\"synth.\(lens)\"}")
+            }
         case ("POST", "/switch"):
             // /switch?id=<deviceID> 切主摄。
             // 先校验 target 在 live 列表里再回 ok;switchDevice 内部 may 静默拒绝(录像中/死设备),
@@ -320,6 +343,8 @@ final class AutomationServer {
                 "pipStatus": m.pipStatusMessage,
                 "mainFrameCount": vm.frameCount,
                 "processedFps": vm.processedFps,
+                "synthFallbackActive": vm.manager.synthFallbackActive,
+                "synthLens": SyntheticCameraSource.shared.lensKind == .ultrawide ? "uw" : (SyntheticCameraSource.shared.lensKind == .tele ? "tele" : "wide"),
                 "zoomFactor": vm.zoom,
                 "zoomIsHardware": vm.zoomIsHardware,
                 "beauty": ["smoothing": vm.settings.smoothing, "whitening": vm.settings.whitening,

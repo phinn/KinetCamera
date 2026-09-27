@@ -239,6 +239,21 @@ final class AutomationServer {
             DispatchQueue.main.async { self.vm?.settings.exposureEV = max(-2, min(2, ev)) }
             // 回包报 clamp 后实际值(±2),而非回显请求参数
             reply(conn, json: "{\"ok\":true,\"exposureEV\":\(max(-2, min(2, ev)))}")
+        case ("POST", "/captureHD"):
+            // 全画幅直拍(A1):photoOutput 全分辨率,纯净档无美颜;回包报落盘文件名或失败原因
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                #if os(iOS)
+                let ok = self.vm?.manager.captureFullResolution { url in
+                    NSLog("[KinetCamera] captureHD → \(url?.lastPathComponent ?? "nil")")
+                } ?? false
+                self.reply(conn, json: ok
+                    ? "{\"ok\":true,\"mode\":\"fullResolution\"}"
+                    : "{\"ok\":false,\"reason\":\"photoOutput inactive\"}")
+                #else
+                self.reply(conn, json: "{\"error\":\"iOS only\"}")
+                #endif
+            }
         case ("POST", "/lens"):
             // iOS 手动对焦镜距: /lens?v=0.5(0近焦~1无穷远) / v=-1 交还自动
             var v = -1.0

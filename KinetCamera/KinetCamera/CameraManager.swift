@@ -80,6 +80,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
     private let sessionQueue = DispatchQueue(label: "com.kinet.camera.session")
     private let videoDataOutput = AVCaptureVideoDataOutput()
+    #if os(iOS)
+    /// 全画幅直拍输出(A1 差距项):拍照分辨率不再被预览流钳制。
+    /// 帧流快门(美颜/回溯/MFNR/连拍)保留;此通道走 /captureHD 或 UI HD 档。
+    let photoOutput = AVCapturePhotoOutput()
+    #endif
     private let audioDataOutput = AVCaptureAudioDataOutput()
     private let videoQueue = DispatchQueue(label: "com.kinet.camera.video")
     private let audioQueue = DispatchQueue(label: "com.kinet.camera.audio")
@@ -591,6 +596,14 @@ final class CameraManager: NSObject, ObservableObject {
         videoDataOutput.alwaysDiscardsLateVideoFrames = true
         videoDataOutput.setSampleBufferDelegate(self, queue: videoQueue)
         if session.canAddOutput(videoDataOutput) { session.addOutput(videoDataOutput) }
+        // 全画幅直拍输出(A1):预览流(美颜/回溯/连拍)与 photoOutput(全分辨率直拍)双通道。
+        // maxPhotoQualityMode 拉满,后续 ProRAW(.raw)在同管线解锁。
+        #if os(iOS)
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            photoOutput.maxPhotoQualityPrioritization = .quality
+        }
+        #endif
         if let conn = videoDataOutput.connection(with: .video),
            conn.isVideoMirroringSupported {
             conn.isVideoMirrored = mainDevice.position == .front
@@ -825,6 +838,33 @@ final class CameraManager: NSObject, ObservableObject {
             NSLog("[KinetCamera] torch 失败: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// 全画幅直拍(A1):photoOutput 全分辨率抓拍,HEIF/JPEG 由系统编,
+    /// 落盘走 savePhoto 同链(EXIF Make/Model + P3 rebind 复用)。
+    /// 美颜不烧入(全画幅直拍=纯净档);带美颜走帧流快门。全画幅+美颜 = A2 ProRAW 后再议。
+    @discardableResult
+    func captureFullResolution(completion: @escaping (URL?) -> Void) -> Bool {
+        guard photoOutput.connections.first(where: { $0.isActive }) != nil else {
+            NSLog("[KinetCamera] photoOutput 无活动连接(HD 档不可用)")
+            return false
+        }
+        let settings = makePhotoSettings()
+        photoOutput.capturePhoto(with: settings, delegate: PhotoCaptureCoordinator.shared)
+        PhotoCaptureCoordinator.shared.enqueue(completion: completion)
+        return true
+    }
+
+    private func makePhotoSettings() -> AVCapturePhotoSettings {
+        var s: AVCapturePhotoSettings
+        if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+            s = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+        } else {
+            s = AVCapturePhotoSettings()
+        }
+        // 逐拍质量档:quality = 多帧融合+降噪,慢但画质上限(与 output 上限 .quality 匹配)
+        s.photoQualityPrioritization = .quality
+        return s
     }
     #endif
 
@@ -1720,4 +1760,48 @@ final class ScreenSourceController: NSObject {
 }
 
 
+#endif
+
+#if os(iOS)
+/// 全画幅直拍回调协调器:capturePhoto(delegate:) 的 delegate 必须在回电前存活,
+/// 每次抓排一个 FIFO,回调后逐个 completion 派发(含失败)。
+final class PhotoCaptureCoordinator: NSObject, AVCapturePhotoCaptureDelegate {
+    static let shared = PhotoCaptureCoordinator()
+    private var completions: [(URL?) -> Void] = []
+    private let lock = NSLock()
+
+    func enqueue(completion: @escaping (URL?) -> Void) {
+        lock.lock(); completions.append(completion); lock.unlock()
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishProcessingPhoto photo: AVCapturePhoto,
+                     error: Error?) {
+        lock.lock(); let cbs = completions; completions = []; lock.unlock()
+        guard error == nil, let data = photo.fileDataRepresentation() else {
+            NSLog("[KinetCamera] photoOutput 抓拍失败: \(error?.localizedDescription ?? "nil data")")
+            cbs.forEach { $0(nil) }
+            return
+        }
+        // 系统已编 HEIF/JPEG(含 EXIF/色彩空间),直接落盘;Make/Model 兜底与帧流一致
+        #if os(macOS)
+        let base = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
+        #else
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+        let dir = base.appendingPathComponent("KinetCamera", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let url = dir.appendingPathComponent("KinetCameraHD-\(formatter.string(from: Date())).jpg")
+        do {
+            try data.write(to: url)
+            NSLog("[KinetCamera] HD 直拍落盘 \(url.lastPathComponent) \(data.count)B")
+            cbs.forEach { $0(url) }
+        } catch {
+            NSLog("[KinetCamera] HD 落盘失败: \(error.localizedDescription)")
+            cbs.forEach { $0(nil) }
+        }
+    }
+}
 #endif

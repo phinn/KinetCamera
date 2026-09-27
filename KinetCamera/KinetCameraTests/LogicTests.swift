@@ -59,6 +59,9 @@ final class DevicePolicyTests: XCTestCase {
         XCTAssertEqual(DevicePolicy.clampZoom(50, formatMax: 120), 8.0)           // 画质红线 8x
         XCTAssertEqual(DevicePolicy.clampZoom(50, formatMax: 6.0), 6.0)           // 格式上限更紧
         XCTAssertEqual(DevicePolicy.clampZoom(4, formatMax: 1.0), 1.0)            // 不支持变焦的设备钳回 1
+        // 无源态语义(manager 层传 qualityCeilingZoom 作 formatMax):目标值保留,不压回 1
+        XCTAssertEqual(DevicePolicy.clampZoom(2.0, formatMax: DevicePolicy.qualityCeilingZoom), 2.0)
+        XCTAssertEqual(DevicePolicy.qualityCeilingZoom, 8.0)
     }
 
     func testHardwareZoomAvailability() {

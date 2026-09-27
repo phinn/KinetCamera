@@ -5,9 +5,35 @@ import CoreVideo
 /// 合成信号源:摄像头被系统层吊死时(远控守护独占/驱动挂起),用 demo pattern 走
 /// 与真实摄像头完全相同的 pixelBuffer 交付路径,验证 app 全链路(预览/AI/拍照/录像)。
 /// 真实摄像头恢复出帧后本源自动停用。
+/// 虚拟摄位(iOS 无摄像头环境/模拟器:三摄位验收用,视野差异模拟光学变焦)
+enum SyntheticLensKind: Int {
+    case ultrawide = 0   // 0.5×:特征缩小(视野广)
+    case wide = 1        // 1×:基准图样
+    case tele = 2        // 5×:特征放大(视野窄)
+
+    var scale: Double {
+        switch self {
+        case .ultrawide: return 0.5
+        case .wide: return 1.0
+        case .tele: return 2.2
+        }
+    }
+}
+
 final class SyntheticCameraSource: NSObject {
 
     static let shared = SyntheticCameraSource()
+
+    /// 当前模拟摄位(切摄位强制重建基图,图样几何尺寸随之变化)
+    var lensKind: SyntheticLensKind = .wide {
+        didSet {
+            guard lensKind != oldValue else { return }
+            queue.async { [weak self] in
+                self?.basePattern = nil
+                self?.basePatternBucket = 255  // 强制 ensureBasePattern 重建
+            }
+        }
+    }
 
     private var displayLink: DispatchSourceTimer?
     private var activity: NSObjectProtocol?
@@ -106,11 +132,17 @@ final class SyntheticCameraSource: NSObject {
                     case 0: (r, g, b) = (UInt8(min(255, Double(brightness) * f)), UInt8(min(255, Double(brightness) * 0.4 * vx * f + 30 * f)), UInt8(min(255, Double(brightness) * 0.6 * f)))
                     case 1: (r, g, b) = (UInt8(min(255, Double(brightness) * vx * f)), UInt8(min(255, Double(brightness) * f)), UInt8(min(255, Double(brightness) * 0.5 * f)))
                     default:
-                        let checker = ((x / 16 + y / 16) % 2 == 0) ? brightness : brightness / 2
-                        (r, g, b) = (UInt8(min(255, Double(checker) * f)), UInt8(min(255, Double(checker) * f)), UInt8(min(255, Double(checker) * (0.5 + 0.5 * vy) * f)))
-                    }
-                    let dx = x - width / 2, dy = y - height / 2
-                    if dx * dx + dy * dy < 110 * 110 { (r, g, b) = (240, 230, 210) }
+                    let cs = max(4, Int(16.0 / lensKind.scale))
+                    let checker: UInt8 = ((x / cs + y / cs) % 2 == 0) ? brightness : brightness / 2
+                    let chkD = Double(checker)
+                    let chkB = Double(checker) * (0.5 + 0.5 * vy)
+                    (r, g, b) = (UInt8(min(255, chkD * f)), UInt8(min(255, chkD * f)), UInt8(min(255, chkB * f)))
+                }
+                let dx = x - width / 2, dy = y - height / 2
+                let rrD = 110.0 * lensKind.scale
+                let rr2 = rrD * rrD
+                let d2 = Double(dx * dx + dy * dy)
+                if d2 < rr2 { (r, g, b) = (240, 230, 210) }
                     row[off] = b; row[off+1] = g; row[off+2] = r; row[off+3] = 255
                 }
             }
@@ -164,10 +196,12 @@ final class SyntheticCameraSource: NSObject {
             }
         }
 
-        // PTS = 帧号/30:单调无重复。
-        // 旧写法 CMTime(seconds: elapsed, timescale: 30) 会被 30Hz 栅栏取整,33ms 一帧时
-        // 连续 2-3 帧 PTS 相同 → AVAssetWriter 视频轨 h264 mux -16364,finishWriting cancelled,成片无 moov。
-        let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(30))
+        // PTS = 墙钟挂钟(timescale 900,33ms=30/900 无取整歧义):帧交得慢(美颜链 14fps)
+        // 时成片时长仍等于真实录制时长,不会时间压缩快放;单调度器串行发射保证 PTS 单调不重。
+        // 旧写法帧号/30 在处理端降速时会把 30s 内容压成 15s 片子(实测);更旧的
+        // CMTime(seconds:elapsed,timescale:30) 因 30Hz 栅栏取整出重复 PTS → h264 mux -16364,均废弃。
+        let elapsed = CACurrentMediaTime() - startWall
+        let pts = CMTime(seconds: elapsed, preferredTimescale: 900)
         onPixelBuffer?(pb, pts)
         if frameIndex % 90 == 0 {
             NSLog("[KinetSynthetic] emitted %d frames", frameIndex)

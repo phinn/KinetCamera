@@ -25,6 +25,7 @@ final class CameraViewModel: ObservableObject {
     }
     @Published var audioSilentWarning = false      // 录音静音告警(录制中实时)
     @Published var lastVideoAudioSilent = false    // 上段录像成片是否静音(JSON 打标用)
+    @Published var backgroundInterruptedDuringRecord = false  // 录制中遭遇后台中断(自动收尾)
 
     private weak var renderView: CIRenderView?
     private var analysisInFlight = false
@@ -72,6 +73,18 @@ final class CameraViewModel: ObservableObject {
             self?.audioSilentWarning = silent
             NSLog("[KinetCamera] 录音静音告警: \(silent ? "进入静音" : "恢复有声")")
         }
+        #if os(iOS)
+        // 后台中断守卫:录制中进后台 → 帧源断流会让 writer 静默饿死(实测成片停涨仍报"正常"),
+        // 主动安全收尾 + 打标,回前台 UI/自动化可见(resignActive 仅 iOS 生命周期有)
+        NotificationCenter.default.addObserver(
+            forName: .kinetBackgroundInterrupt, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.manager.isRecording else { return }
+            self.backgroundInterruptedDuringRecord = true
+            NSLog("[KinetCamera] 后台中断:录制中,自动安全收尾保存成片")
+            self.manager.stopRecording { _ in }
+        }
+        #endif
         // 自动化美颜接口
         NotificationCenter.default.addObserver(
             forName: Notification.Name("kinetSetBeauty"), object: nil, queue: .main

@@ -41,6 +41,8 @@ struct KinetCameraApp: App {
 extension Notification.Name {
     static let kinetCapturePhoto = Notification.Name("kinetCapturePhoto")
     static let kinetToggleRecord = Notification.Name("kinetToggleRecord")
+    static let kinetStartRecord = Notification.Name("kinetStartRecord")
+    static let kinetStopRecord = Notification.Name("kinetStopRecord")
     static let kinetCaptureNight = Notification.Name("kinetCaptureNight")
     static let kinetCaptureSteady = Notification.Name("kinetCaptureSteady")
     static let kinetCaptureHDR = Notification.Name("kinetCaptureHDR")
@@ -71,6 +73,12 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetToggleRecord)) { _ in
             vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetStartRecord)) { _ in
+            if !vm.manager.isRecording { vm.startRecording() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetStopRecord)) { _ in
+            if vm.manager.isRecording { vm.stopRecording() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureNight)) { _ in
             vm.captureNight()
@@ -246,6 +254,17 @@ final class KinetAppDelegate: NSObject, UIApplicationDelegate {
             name: Notification.Name("kinetDeepLink"), object: url)
         return true
     }
+
+    /// 后台中断守卫:iOS 回后台后帧源断流,录制中的 writer 会静默饿死
+    /// (实测:成片停涨、finishStatus=2 看似正常、用户以为还在录)。
+    /// 进后台前主动安全收尾保存成片,回前台后 UI 告知。
+    func applicationWillResignActive(_ application: UIApplication) {
+        NotificationCenter.default.post(name: .kinetBackgroundInterrupt, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let kinetBackgroundInterrupt = Notification.Name("kinetBackgroundInterrupt")
 }
 
 struct iOSRootView: View {

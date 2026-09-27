@@ -197,6 +197,11 @@ final class CameraViewModel: ObservableObject {
 
     /// 渲染诊断(automation)
     var renderDrawCount: Int { renderView?.drawCount ?? -1 }
+    /// 网格/水平仪(B4):开关 + 实时倾角(来自 AIAnalyzer horizon 检测)
+    @Published var horizonAngle: Double = 0   // 度;|θ|<0.5 = 水平(绿)
+    func setGrid(_ on: Bool) { showGrid = on }
+    func setHorizon(_ deg: Double) { horizonAngle = deg }
+    var gridOn: Bool { showGrid }
     var renderDrawState: String { renderView?.lastDrawError ?? "no view" }
 
     // MARK: - 拍照(主线程调用)

@@ -239,6 +239,20 @@ final class AutomationServer {
             DispatchQueue.main.async { self.vm?.settings.exposureEV = max(-2, min(2, ev)) }
             // 回包报 clamp 后实际值(±2),而非回显请求参数
             reply(conn, json: "{\"ok\":true,\"exposureEV\":\(max(-2, min(2, ev)))}")
+        case ("POST", "/grid"):
+            // 网格/水平仪叠加: /grid?on=1&horizon=3.2(度;|θ|<0.5 绿=水平,否则黄)
+            // 纯预览叠加,不进照片
+            let on = target.contains("on=1")
+            var horizon: Double?
+            if let r = target.range(of: "horizon=") {
+                horizon = Double(target[r.upperBound...].components(separatedBy: "&").first ?? "")
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.vm?.setGrid(on)
+                if let h = horizon { self.vm?.setHorizon(h) }
+                self.reply(conn, json: "{\"ok\":true,\"grid\":\(on),\"horizon\":\(horizon ?? 0)}")
+            }
         case ("POST", "/captureHD"):
             // 全画幅直拍(A1):photoOutput 全分辨率,纯净档无美颜;回包报落盘文件名或失败原因
             DispatchQueue.main.async { [weak self] in
@@ -453,6 +467,8 @@ final class AutomationServer {
                 "synthFallbackActive": vm.manager.synthFallbackActive,
                 "synthLens": SyntheticCameraSource.shared.lensKind == .ultrawide ? "uw" : (SyntheticCameraSource.shared.lensKind == .tele ? "tele" : "wide"),
                 "zoomFactor": vm.zoom,
+                "showGrid": vm.showGrid,
+                "horizonAngle": vm.horizonAngle,
                 "zoomIsHardware": vm.zoomIsHardware,
                 "beauty": ["smoothing": vm.settings.smoothing, "whitening": vm.settings.whitening,
                            "brightening": vm.settings.brightening, "faceSlim": vm.settings.faceSlim,

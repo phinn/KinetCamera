@@ -13,9 +13,9 @@ final class CIRenderView: MTKView {
             #endif
         }
     }
+
     private(set) var drawCount = 0
     private(set) var lastDrawError = ""
-
     private let commandQueue: MTLCommandQueue?
     // 上屏专用 CIContext:与美颜处理链(FilterPipeline.shared.renderContext)分离。
     // 根因:CIContext 内部 surface 缓存有锁,主线程 draw 的 render 与 videoQueue 的美颜/录像写帧
@@ -126,4 +126,5 @@ final class CIRenderView: MTKView {
         commandBuffer.commit()
         drawable.present()
     }
+
 }

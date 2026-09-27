@@ -283,8 +283,10 @@ struct iOSRootView: View {
                 .aspectRatio(3.0/4.0, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-
-            if vm.showGrid { GridOverlay().allowsHitTesting(false) }
+                .overlay {
+                    // 网格/水平仪与预览同 frame:线心严格对齐画面中心(挂 ZStack 全屏会有 3:4 偏差)
+                    if vm.showGrid { GridOverlay(horizonAngle: vm.horizonAngle).allowsHitTesting(false) }
+                }
 
             // 画中画小窗(右上,避开摄位条)
             VStack {
@@ -539,19 +541,35 @@ struct SettingsSheet: View {
 }
 #endif
 
-// MARK: - 网格(三分线)
+// MARK: - 网格(三分线)+ 水平仪线
 struct GridOverlay: View {
+    var horizonAngle: Double? = nil   // 度;nil=不画水平线;|θ|<0.5 绿(水平)否则黄
+
     var body: some View {
         GeometryReader { geo in
-            Path { p in
-                for i in 1...2 {
-                    p.move(to: CGPoint(x: geo.size.width * CGFloat(i) / 3, y: 0))
-                    p.addLine(to: CGPoint(x: geo.size.width * CGFloat(i) / 3, y: geo.size.height))
-                    p.move(to: CGPoint(x: 0, y: geo.size.height * CGFloat(i) / 3))
-                    p.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height * CGFloat(i) / 3))
+            ZStack {
+                Path { p in
+                    for i in 1...2 {
+                        p.move(to: CGPoint(x: geo.size.width * CGFloat(i) / 3, y: 0))
+                        p.addLine(to: CGPoint(x: geo.size.width * CGFloat(i) / 3, y: geo.size.height))
+                        p.move(to: CGPoint(x: 0, y: geo.size.height * CGFloat(i) / 3))
+                        p.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height * CGFloat(i) / 3))
+                    }
+                }
+                .stroke(Color.white.opacity(0.25), lineWidth: 0.7)
+                if let a = horizonAngle {
+                    let level = abs(a) < 0.5
+                    let lineColor = level ? Color.green : Color.yellow
+                    // 中线绕中心旋转(SwiftUI y 向下,正角=顺时针倾);
+                    // 3pt 高 + .compositingGroup 防薄线被 alpha 混合吞掉
+                    Rectangle()
+                        .fill(lineColor.opacity(0.95))
+                        .frame(width: geo.size.width * 0.6, height: 3)
+                        .rotationEffect(.degrees(a))
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                        .allowsHitTesting(false)
                 }
             }
-            .stroke(Color.white.opacity(0.25), lineWidth: 0.7)
         }
     }
 }

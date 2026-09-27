@@ -37,6 +37,8 @@ final class CameraManager: NSObject, ObservableObject {
         return []
         #endif
     }
+    /// iOS 无源态合成源回退(模拟器/无摄像头设备):三摄位走 SyntheticLensKind
+    @Published var synthFallbackActive = false
     @Published var activeDeviceID: String?
     @Published var isSessionRunning = false
     @Published var isRecording = false
@@ -328,6 +330,17 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.rebuildSessionLocked()
+            #if os(iOS)
+            // iOS 无源态(模拟器):startRunning 空会话会阻塞到系统超时(实测 10s+,
+            // "Timed out waiting for session to start"),把合成回退堵死 —— 直接跳过
+            if self.devices.isEmpty {
+                DispatchQueue.main.async {
+                    self.isSessionRunning = false
+                    self.startStreamHealthCheck()
+                }
+                return
+            }
+            #endif
             if !self.session.isRunning { self.session.startRunning() }
             DispatchQueue.main.async {
                 self.isSessionRunning = self.session.isRunning
@@ -340,19 +353,43 @@ final class CameraManager: NSObject, ObservableObject {
     /// 自动切合成信号源(同一 pixelBuffer 路径);硬件恢复出帧后自动停用。
     private func startStreamHealthCheck() {
         streamHealthTimer?.invalidate()
+        #if os(iOS)
+        // iOS 无源态(已授权但枚举零设备 = 模拟器):立即合成源回退,三摄位可模拟
+        NSLog("[KinetHealthCheck] iOS branch: auth=%d devices=%d synthetic=%d",
+              AVCaptureDevice.authorizationStatus(for: .video).rawValue,
+              devices.count, SyntheticCameraSource.shared.isActive ? 1 : 0)
+        if AVCaptureDevice.authorizationStatus(for: .video) == .authorized, devices.isEmpty {
+            engageSyntheticFallback()
+            return
+        }
+        #endif
         #if os(macOS)
         guard SyntheticCameraSource.shared.isActive == false else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
             guard let self else { return }
             guard self.videoFrames == 0, self.debugConnEnabled, self.isSessionRunning else { return }
             NSLog("[KinetCamera] hardware stream dead (0 frames in 4s) — engaging synthetic source")
-            SyntheticCameraSource.shared.onPixelBuffer = { [weak self] pb, pts in
-                self?.ingestPixelBuffer(pb, time: pts)
-            }
-            SyntheticCameraSource.shared.start()
+            self.engageSyntheticFallback()
         }
         RunLoop.main.add(timer, forMode: .common)
         #endif
+    }
+
+    /// 合成源接管:与真实摄像头同一 pixelBuffer 交付路径(预览/AI/拍照/录像全链路可用)
+    func engageSyntheticFallback() {
+        guard SyntheticCameraSource.shared.isActive == false else { return }
+        NSLog("[KinetCamera] engaging synthetic source (no camera hardware)")
+        SyntheticCameraSource.shared.onPixelBuffer = { [weak self] pb, pts in
+            self?.ingestPixelBuffer(pb, time: pts)
+        }
+        SyntheticCameraSource.shared.start()
+        DispatchQueue.main.async { self.synthFallbackActive = true }
+    }
+
+    /// 虚拟摄位切换(仅合成源回退态有效)
+    func switchSynthLens(_ kind: SyntheticLensKind) {
+        guard synthFallbackActive else { return }
+        SyntheticCameraSource.shared.lensKind = kind
     }
 
     /// 切换主摄(录像中禁止,避免写坏文件)。

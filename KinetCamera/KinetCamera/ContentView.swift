@@ -4,6 +4,9 @@ import AVFoundation
 
 @main
 struct KinetCameraApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(KinetAppDelegate.self) private var appDelegate
+    #endif
     var body: some Scene {
         WindowGroup {
             #if os(macOS)
@@ -51,6 +54,66 @@ struct ContentView: View {
     @StateObject private var vm = CameraViewModel()
 
     var body: some View {
+        Group {
+            #if os(iOS)
+            iOSRootView(vm: vm)
+            #else
+            macContent
+            #endif
+        }
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            AutomationServer.shared.start(vm: vm)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCapturePhoto)) { _ in
+            vm.capturePhoto()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetToggleRecord)) { _ in
+            vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureNight)) { _ in
+            vm.captureNight()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureSteady)) { _ in
+            vm.captureSteady()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureHDR)) { _ in
+            vm.captureHDR()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureBurst)) { _ in
+            vm.captureBurst()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureRetro)) { _ in
+            vm.captureRetro()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .kinetToggleAELock)) { _ in
+            vm.manager.toggleAELock()
+        }
+        .onOpenURL { url in
+            // kinetcamera:// 真机验收控制面:devicectl process openURL 即可驱动,
+            // 不依赖端口转发(USB 无 iproxy 时唯一的远程控制通道)
+            print("[KinetDeepLink] received: \(url.absoluteString)")
+            Self.handleDeepLink(url, vm: vm)
+        }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            // 兜底:Universal Link / 冷启动场景 onOpenURL 丢事件时走这里
+            if let url = activity.webpageURL {
+                print("[KinetDeepLink] via NSUserActivity: \(url.absoluteString)")
+                Self.handleDeepLink(url, vm: vm)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("kinetDeepLink"))) { note in
+            if let url = note.object as? URL {
+                print("[KinetDeepLink] via AppDelegate: \(url.absoluteString)")
+                Self.handleDeepLink(url, vm: vm)
+            }
+        }
+    }
+
+    /// macOS:横向双栏(预览 + 300pt 控制侧板)
+    @ViewBuilder
+    private var macContent: some View {
         HStack(spacing: 0) {
             // 主预览区
             ZStack {
@@ -94,40 +157,6 @@ struct ContentView: View {
             // 右侧面板
             SidePanelView(vm: vm)
                 .frame(width: 300)
-        }
-        .background(Color.black)
-        .preferredColorScheme(.dark)
-        .onAppear {
-            AutomationServer.shared.start(vm: vm)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCapturePhoto)) { _ in
-            vm.capturePhoto()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetToggleRecord)) { _ in
-            vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureNight)) { _ in
-            vm.captureNight()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureSteady)) { _ in
-            vm.captureSteady()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureHDR)) { _ in
-            vm.captureHDR()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureBurst)) { _ in
-            vm.captureBurst()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetCaptureRetro)) { _ in
-            vm.captureRetro()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .kinetToggleAELock)) { _ in
-            vm.manager.toggleAELock()
-        }
-        .onOpenURL { url in
-            // kinetcamera:// 真机验收控制面:devicectl process openURL 即可驱动,
-            // 不依赖端口转发(USB 无 iproxy 时唯一的远程控制通道)
-            Self.handleDeepLink(url, vm: vm)
         }
     }
 
@@ -202,6 +231,270 @@ struct PreviewView: UIViewRepresentable {
         return v
     }
     func updateUIView(_ v: CIRenderView, context: Context) {}
+}
+#endif
+
+// MARK: - iOS 竖屏布局(对标系统相机:全屏预览+顶部摄位条+底部快门区+抽屉设置)
+#if os(iOS)
+/// 深链兜底:AppDelegate open-url 生命周期(模拟器 simctl openurl 对纯 SwiftUI onOpenURL 有丢事件场景)
+final class KinetAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ app: UIApplication,
+                     open url: URL,
+                     options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+        print("[KinetDeepLink] AppDelegate open: \(url.absoluteString)")
+        NotificationCenter.default.post(
+            name: Notification.Name("kinetDeepLink"), object: url)
+        return true
+    }
+}
+
+struct iOSRootView: View {
+    @ObservedObject var vm: CameraViewModel
+    @State private var showSettings = false
+
+    var body: some View {
+        ZStack {
+            // 全屏预览(4:3 内容居中,黑边留白,不裁切画面)
+            PreviewView(vm: vm)
+                .aspectRatio(3.0/4.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+
+            if vm.showGrid { GridOverlay().allowsHitTesting(false) }
+
+            // 画中画小窗(右上,避开摄位条)
+            VStack {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        ForEach(vm.manager.pipDeviceIDs, id: \.self) { id in
+                            PIPPreviewView(image: vm.pipFrames[id])
+                                .frame(width: 110, height: 62)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.white.opacity(0.35), lineWidth: 1))
+                        }
+                    }
+                    .padding(.trailing, 12)
+                    .padding(.top, 56) // 让开顶部摄位条
+                }
+                Spacer()
+            }
+
+            VStack(spacing: 0) {
+                CameraTopBar(vm: vm)
+                Spacer()
+                // 实时指标条(录像红点/静音告警/处理帧率,拍_VIDEO 时可见)
+                if vm.manager.isRecording {
+                    RecordingPill(vm: vm).padding(.bottom, 10)
+                }
+                CameraBottomBar(vm: vm, showSettings: $showSettings)
+            }
+
+            // AI 修正实时报告(成片后浮现,2.5s 语义由数据驱动:有明细才显示)
+            VStack {
+                Spacer()
+                if let r = vm.lastCaptureReport, !r.applied.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(r.applied.prefix(3), id: \.self) { item in
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill").font(.caption2)
+                                Text(item).font(.caption2)
+                            }.foregroundColor(.white.opacity(0.92))
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
+                    .padding(.bottom, 148)
+                    .transition(.opacity)
+                }
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .sheet(isPresented: $showSettings) {
+            SettingsSheet(vm: vm)
+        }
+    }
+}
+
+/// 顶部摄位条:0.5×/1×/5× 硬件镜头位(苹果式,选中加粗白,未选灰)
+struct CameraTopBar: View {
+    @ObservedObject var vm: CameraViewModel
+
+    var body: some View {
+        HStack(spacing: 26) {
+            // 相机菜单(回退:多于3摄或单摄场景)
+            Menu {
+                ForEach(vm.manager.devices, id: \.uniqueID) { dev in
+                    Button(dev.localizedName) { vm.switchDevice(dev.uniqueID) }
+                }
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
+            }
+
+            if vm.manager.lensCandidates.count > 1 {
+                ForEach(vm.manager.lensCandidates, id: \.device.uniqueID) { cand in
+                    let selected = vm.manager.activeDeviceID == cand.device.uniqueID
+                    Button {
+                        vm.manager.switchDevice(to: cand.device.uniqueID)
+                    } label: {
+                        Text(cand.label)
+                            .font(.system(size: selected ? 15 : 14,
+                                          weight: selected ? .bold : .regular,
+                                          design: .rounded))
+                            .foregroundColor(selected ? .yellow : .white.opacity(0.65))
+                    }
+                }
+            } else {
+                // 无多摄位:显示当前相机名
+                Text(vm.manager.devices.first { $0.uniqueID == vm.manager.activeDeviceID }?.localizedName ?? "相机")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.8))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+}
+
+/// 录制中状态胶囊
+struct RecordingPill: View {
+    @ObservedObject var vm: CameraViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(Color.red).frame(width: 9, height: 9)
+            Text(String(format: "%02d:%02d", Int(vm.manager.recordingSeconds)/60, Int(vm.manager.recordingSeconds)%60))
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundColor(.red)
+            if vm.audioSilentWarning {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.caption).foregroundColor(.orange)
+            }
+            if vm.processedFps > 0 {
+                Text(String(format: "%.0ffps", vm.processedFps))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.white.opacity(0.6))
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(Capsule().fill(Color.black.opacity(0.5)))
+    }
+}
+
+/// 底部操作区:模式词 + 快门排 + 相册/设置(苹果相机三段式)
+struct CameraBottomBar: View {
+    @ObservedObject var vm: CameraViewModel
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        VStack(spacing: 14) {
+            // 模式词行(苹果式:视频左侧、照片右侧,中间快门)
+            HStack(spacing: 22) {
+                modeButton("视频", icon: "video.fill") {
+                    vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+                }
+                modeButton("夜景", icon: "moon.stars.fill", tint: .yellow) { vm.captureNight() }
+                modeButton("连拍", icon: "burst.fill") { vm.captureBurst() }
+                modeButton("HDR", icon: "hdr.badge") { vm.captureHDR() }
+                modeButton("回溯", icon: "clock.arrow.circlepath") { vm.captureRetro() }
+            }
+
+            // 主快门排:相册 | 快门 | 设置
+            HStack {
+                // 左:最近成片缩略(暂用图库符)
+                Button {
+                    openPhotos()
+                } label: {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 52, height: 52)
+                }
+
+                Spacer()
+
+                // 中:快门(拍照白圈;录像中变红方块=停止)
+                Button {
+                    vm.capturePhoto()
+                } label: {
+                    ZStack {
+                        Circle().stroke(Color.white, lineWidth: 4).frame(width: 72, height: 72)
+                        if vm.manager.isRecording {
+                            RoundedRectangle(cornerRadius: 6).fill(Color.red).frame(width: 30, height: 30)
+                        } else {
+                            Circle().fill(Color.white).frame(width: 60, height: 60)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.15), value: vm.manager.isRecording)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                // 右:录像切换 + 设置(两枚纵排小按钮)
+                VStack(spacing: 14) {
+                    Button {
+                        vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+                    } label: {
+                        Image(systemName: vm.manager.isRecording ? "stop.circle.fill" : "record.circle")
+                            .font(.system(size: 24))
+                            .foregroundColor(vm.manager.isRecording ? .red : .white.opacity(0.9))
+                    }
+                    Button { showSettings = true } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 22))
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                }
+                .frame(width: 52)
+            }
+            .padding(.horizontal, 34)
+            .padding(.bottom, 18)
+        }
+    }
+
+    private func modeButton(_ name: String, icon: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 17))
+                Text(name).font(.system(size: 10))
+            }
+            .foregroundColor(tint.opacity(0.92))
+        }
+    }
+
+    private func openPhotos() {
+        if let url = URL(string: "photos-redirect://") {
+            UIApplication.shared.open(url)
+        }
+    }
+}
+
+/// iOS 设置抽屉:复用 Mac SidePanel 的 7 组控件(Scroll 可滚,底部安全区留白)
+struct SettingsSheet: View {
+    @ObservedObject var vm: CameraViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                SidePanelView(vm: vm)
+                    .padding(.bottom, 20)
+            }
+            .navigationTitle("控制面板")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
 }
 #endif
 

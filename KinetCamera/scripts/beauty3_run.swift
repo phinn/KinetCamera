@@ -37,6 +37,14 @@ struct Main {
         var s0 = FilterSettings(sharpen: 0)
         s0.smoothing = 0; s0.whitening = 0; s0.faceSlim = 0
         save("00_before", s0)
+        // 阶梯模式:SMOOTH_STEPS="0.3,0.5,0.9" 环境变量 → 逐档出图
+        if let steps = ProcessInfo.processInfo.environment["SMOOTH_STEPS"] {
+            for t in steps.split(separator: ",") {
+                guard let v = Double(t) else { continue }
+                var sv = s0; sv.smoothing = v
+                save(String(format: "step_s%.1f", v), sv)
+            }
+        }
         var s1 = s0; s1.smoothing = 0.7
         save("01_smoothing07", s1)
         var s2 = s0; s2.whitening = 0.6

@@ -113,16 +113,17 @@ final class CIRenderView: MTKView {
                        commandBuffer: commandBuffer,
                        bounds: scaled.extent,
                        colorSpace: CGColorSpaceCreateDeviceRGB())
-        commandBuffer.addCompletedHandler { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.lastDrawError = "completed ok"
+        // 主线程零等待:commit 后立即返回,完成回调只在错误时上报。
+        // (此前每帧 waitUntilScheduled + main.async 写 "completed ok",
+        //  sample 实测主线程白等 GPU 调度 + RunLoop 抖动,是 UI 卡顿根因之一)
+        commandBuffer.addCompletedHandler { [weak self] buf in
+            if buf.status != .completed {
+                DispatchQueue.main.async {
+                    self?.lastDrawError = "draw error status=\(buf.status.rawValue)"
+                }
             }
         }
-        // status: 0=enqueued 1=committed 2=scheduled 3=completed
-        lastDrawError = "pre-present status=\(commandBuffer.status.rawValue)"
         commandBuffer.commit()
-        commandBuffer.waitUntilScheduled()   // 确保 CI 写完调度再上屏,防撕裂
         drawable.present()
-        lastDrawError = "post-commit status=\(commandBuffer.status.rawValue)"
     }
 }

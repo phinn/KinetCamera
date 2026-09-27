@@ -11,3 +11,5 @@ scripts/tmp/
 docs/evidence/*.mov
 docs/evidence/iphone_real_20260927/v2_devices.json
 docs/evidence/iphone_real_20260927/v2_pulls/
+docs/evidence/iphone_real_20260927/v3_devices.json
+docs/evidence/iphone_real_20260927/v3_pulls/

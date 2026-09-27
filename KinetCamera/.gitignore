@@ -9,3 +9,4 @@ __pycache__/
 default.profraw
 scripts/tmp/
 docs/evidence/*.mov
+docs/evidence/iphone_real_20260927/v2_devices.json

@@ -115,6 +115,7 @@ final class CameraViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     self?.lastAnalysis = result
                     self?.applyAutoAdjustment()
+                    self?.enforceFocusPolicy(now: CFAbsoluteTimeGetCurrent())
                     self?.analysisInFlight = false
                 }
             }
@@ -137,6 +138,30 @@ final class CameraViewModel: ObservableObject {
             blurScore: lastAnalysis.blurScore,
             smoothing: settings.smoothing)
         lastAdjustment = adj
+    }
+
+    // MARK: - P0③ 再对焦抑制(FocusPolicy)
+    /// 上次分析的脸框(连续帧间比较用);分析每 30 帧一次,天然形成采样节拍
+    private var focusStateLastFace: CGRect?
+    private var focusStateLastRefocus: TimeInterval = 0
+
+    private func enforceFocusPolicy(now: TimeInterval) {
+        // iOS:脸变>15%/位移>6%/冷却1.2s 才拉焦;macOS 内建摄无 focusMode 可用面,跳过
+        #if os(iOS)
+        guard let device = manager.activeMainDeviceInternal, device.isFocusModeSupported(.continuousAutoFocus) else { return }
+        let need = FocusPolicy.shouldRefocus(
+            previousFace: focusStateLastFace,
+            currentFace: lastAnalysis.faceRect,
+            now: now, lastRefocus: focusStateLastRefocus)
+        focusStateLastFace = lastAnalysis.faceRect
+        if need {
+            focusStateLastRefocus = now
+            manager.setFocusMode(.continuousAutoFocus)   // 交还系统拉一次焦
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.manager.setFocusMode(.locked)      // 拉完即锁,防连拉
+            }
+        }
+        #endif
     }
 
     /// 生效值 = 用户滑杆 + 自适应偏移(clamp 0-1)。预览/录像链统一取 effectiveSettings。
@@ -169,8 +194,23 @@ final class CameraViewModel: ObservableObject {
         }
         // 主线程快照滤镜设置,避免后台线程读 @Published struct 的 data race
         let beauty = settings
+        let autoAdapt = self.autoAdapt
+        let brightness = lastAnalysis.brightness
         Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.processAndSave(frame, beauty: beauty)
+            guard let self else { return }
+            // P0① MFNR:暗光(亮度<0.30)自动 3 帧合成降噪,失败/不合法静默回退单帧(拍照永远成功)
+            if autoAdapt, brightness < 0.30 {
+                let ring = self.manager.recentFrames(3) ?? []
+                let times = ring.map { $0.time }
+                if MFNR.canMerge(times: times),
+                   let merged = MFNR.composite(ring.map { $0.image }, context: self.pipeline.renderContext) {
+                    await self.processAndSave(
+                        merged, beauty: beauty,
+                        retroNote: String(format: "MFNR 3帧降噪(暗光%.0f%%)", brightness * 100))
+                    return
+                }
+            }
+            await self.processAndSave(frame, beauty: beauty)
         }
     }
 
@@ -187,11 +227,16 @@ final class CameraViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let ctx = pipeline.renderContext
-            // 逐帧打分:清晰度为纲,曝光贴近 50 加权;隔帧采样降一半算力
+            // 逐帧打分:清晰度为纲,曝光贴近 50 加权;隔帧采样降一半算力。
+            // P0②:有脸时叠加脸区分数(权重 0.5)—— 背景再清晰,脸糊不算好抓拍
             var best: (index: Int, score: Double, image: CIImage)?
             for (i, f) in frames.enumerated() where i % 2 == 0 {
                 let a = AIAnalyzer.analyze(f.image, context: ctx)
-                let score = a.blurScore * 0.6 + a.exposureScore * 0.4  // 质量分越高越好
+                var score = a.blurScore * 0.6 + a.exposureScore * 0.4
+                if a.faceCount > 0, let cg = ctx.createCGImage(f.image, from: f.image.extent) {
+                    let faceScore = AIAnalyzer.sharpnessScore(cgImage: cg, faceRect: a.faceRect)
+                    score = a.blurScore * 0.3 + a.exposureScore * 0.2 + faceScore * 0.5
+                }
                 if best == nil || score > best!.score { best = (i, score, f.image) }
             }
             guard let pick = best else {

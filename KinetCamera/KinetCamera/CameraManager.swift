@@ -666,6 +666,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// FocusPolicy 用的主摄只读入口(viewModel 侧策略判定,不碰会话配置)
+    var activeMainDeviceInternal: AVCaptureDevice? { activeMainDevice }
+
     /// 对焦模式切换: .locked = 锁定当前对焦(防拉风箱), .continuousAutoFocus = 交还系统
     func setFocusMode(_ mode: AVCaptureDevice.FocusMode) {
         guard let device = activeMainDevice, device.isFocusModeSupported(mode) else { return }

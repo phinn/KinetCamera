@@ -239,6 +239,56 @@ final class AutomationServer {
             DispatchQueue.main.async { self.vm?.settings.exposureEV = max(-2, min(2, ev)) }
             // 回包报 clamp 后实际值(±2),而非回显请求参数
             reply(conn, json: "{\"ok\":true,\"exposureEV\":\(max(-2, min(2, ev)))}")
+        case ("POST", "/lens"):
+            // iOS 手动对焦镜距: /lens?v=0.5(0近焦~1无穷远) / v=-1 交还自动
+            var v = -1.0
+            if let r = target.range(of: "v=") {
+                v = Double(target[r.upperBound...].components(separatedBy: "&").first ?? "") ?? -1.0
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                #if os(iOS)
+                let applied = self.vm?.manager.setManualLensPosition(Float(v)) ?? false
+                self.reply(conn, json: applied
+                    ? "{\"ok\":true,\"lensPosition\":\(v)}"
+                    : "{\"ok\":false,\"reason\":\"no active camera or focus lock unsupported\"}")
+                #else
+                self.reply(conn, json: "{\"error\":\"iOS only (macOS lensPosition platform-walled)\"}")
+                #endif
+            }
+        case ("POST", "/exposureManual"):
+            // iOS 硬件手动曝光: /exposureManual?dur=0.02&iso=400(秒/ISO) / 全 nil 交还自动
+            // (区别于 /exposure 的软件 EV 档:硬件档直控传感器,软件档走滤镜链增益)
+            var dur: Double?, iso: Float?
+            if let r = target.range(of: "dur=") {
+                dur = Double(target[r.upperBound...].components(separatedBy: "&").first ?? "")
+            }
+            if let r = target.range(of: "iso=") {
+                iso = Float(target[r.upperBound...].components(separatedBy: "&").first ?? "")
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                #if os(iOS)
+                let applied = self.vm?.manager.setManualExposure(durationSeconds: dur, iso: iso) ?? false
+                self.reply(conn, json: applied
+                    ? "{\"ok\":true,\"duration\":\(dur ?? -1),\"iso\":\(iso ?? -1)}"
+                    : "{\"ok\":false,\"reason\":\"no active camera or custom exposure unsupported\"}")
+                #else
+                self.reply(conn, json: "{\"error\":\"iOS only (macOS exposure platform-walled)\"}")
+                #endif
+            }
+        case ("POST", "/torch"):
+            // 手电/补光: /torch?on=1 / on=0(录制补光;拍照 flash 随 photoOutput 档落地)
+            let on = target.contains("on=1")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                #if os(iOS)
+                let applied = self.vm?.manager.setTorch(on) ?? false
+                self.reply(conn, json: applied ? "{\"ok\":true,\"torch\":\(on)}" : "{\"ok\":false,\"reason\":\"no torch\"}")
+                #else
+                self.reply(conn, json: "{\"error\":\"iOS only\"}")
+                #endif
+            }
         case ("POST", "/focus"):
             // 对焦锁: /focus?mode=lock(防拉风箱) / mode=auto(交还系统)
             let lock = !target.contains("mode=auto")

@@ -746,6 +746,88 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - iOS 手动专业档(真机能力;macOS 平台墙见上方注释)
+    // 手动对焦镜距:lensPosition 0(近焦)~1(无穷远)。进入手动即 focusMode=.locked,
+    // 退出(-1)交还 continuousAutoFocus。竞品对标:Halide 对焦滑杆。
+    #if os(iOS)
+    @discardableResult
+    func setManualLensPosition(_ value: Float) -> Bool {
+        guard let device = activeMainDevice else { return false }
+        guard device.isFocusModeSupported(.locked) else { return false }
+        do {
+            try device.lockForConfiguration()
+            if value < 0 {
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                NSLog("[KinetCamera] lensPosition → 自动")
+            } else {
+                let v = min(max(value, 0), 1)
+                if device.isLockingFocusWithCustomLensPositionSupported {
+                    device.setFocusModeLocked(lensPosition: v)
+                    NSLog("[KinetCamera] lensPosition → %.2f", v)
+                } else {
+                    device.focusMode = .locked
+                    NSLog("[KinetCamera] lensPosition 自定义不支持,仅锁定(%.2f 未生效)", v)
+                }
+            }
+            device.unlockForConfiguration()
+            return true
+        } catch {
+            NSLog("[KinetCamera] lensPosition 失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 手动曝光:duration(曝光时长秒) + ISO 同时下,进入 .custom 模式。
+    /// 传 nil 表示该轴交还自动;两者全 nil = 退出自定义曝光。竞品对标:Halide ISO/快门双滑杆。
+    @discardableResult
+    func setManualExposure(durationSeconds: Double?, iso: Float?) -> Bool {
+        guard let device = activeMainDevice else { return false }
+        guard device.isExposureModeSupported(.custom) else {
+            NSLog("[KinetCamera] custom 曝光不受支持")
+            return false
+        }
+        do {
+            try device.lockForConfiguration()
+            if durationSeconds == nil && iso == nil {
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                NSLog("[KinetCamera] exposure → 自动")
+            } else {
+                let dur = durationSeconds.map { CMTime(seconds: min(max($0, device.activeFormat.minExposureDuration.seconds), device.activeFormat.maxExposureDuration.seconds), preferredTimescale: 1_000_000) }
+                    ?? device.exposureDuration
+                let isoV = iso.map { min(max($0, device.activeFormat.minISO), device.activeFormat.maxISO) }
+                    ?? device.iso
+                device.setExposureModeCustom(duration: dur, iso: isoV)
+                NSLog("[KinetCamera] exposure custom → dur=%.4fs iso=%.0f", dur.seconds, isoV)
+            }
+            device.unlockForConfiguration()
+            return true
+        } catch {
+            NSLog("[KinetCamera] exposure custom 失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 闪光灯/手电:预览态 torch(录像补光);拍照 flash 由 AVCapturePhotoSettings 携带(A1 落地时接)。
+    @discardableResult
+    func setTorch(_ on: Bool) -> Bool {
+        guard let device = activeMainDevice, device.hasTorch else { return false }
+        do {
+            try device.lockForConfiguration()
+            device.torchMode = on && device.isTorchModeSupported(.on) ? .on : .off
+            device.unlockForConfiguration()
+            NSLog("[KinetCamera] torch → \(on)")
+            return true
+        } catch {
+            NSLog("[KinetCamera] torch 失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+    #endif
+
     /// 配置帧率(不动 activeFormat:实测对内建 FaceTime 相机改格式会让 data output 静默断流)
     private func unlockMaxResolutionLocked(_ device: AVCaptureDevice) {        do {
             try device.lockForConfiguration()

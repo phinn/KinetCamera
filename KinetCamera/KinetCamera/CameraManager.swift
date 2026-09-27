@@ -39,6 +39,18 @@ final class CameraManager: NSObject, ObservableObject {
     }
     /// iOS 无源态合成源回退(模拟器/无摄像头设备):三摄位走 SyntheticLensKind
     @Published var synthFallbackActive = false
+
+    // 录像质量档:1080p30(默认,美颜全链) / 4K60(纯净高规格档)
+    enum RecordingQuality: String, CaseIterable {
+        case hd1080p30
+        case uhd4k60
+        var fps: Int32 { self == .uhd4k60 ? 60 : 30 }
+        var minWidth: Int32 { self == .uhd4k60 ? 3840 : 1920 }
+        var sessionPreset: AVCaptureSession.Preset {
+            self == .uhd4k60 ? .hd4K3840x2160 : .hd1920x1080
+        }
+    }
+    @Published var recordingQuality: RecordingQuality = .hd1080p30
     @Published var activeDeviceID: String?
     @Published var isSessionRunning = false
     @Published var isRecording = false
@@ -137,6 +149,9 @@ final class CameraManager: NSObject, ObservableObject {
     private(set) var droppedAtRecord = 0
     private(set) var appendAttempts = 0
     private(set) var videoAppendFailures = 0
+    private(set) var scaleMismatchCount = 0
+    /// 合成源摄位切换豁免:同一时钟源,帧间隙大≠时基断裂,不该重对齐剪掉前段
+    private var suppressPTSGuardUntil: CMTime = .invalid
     private(set) var lastAppendErrorCode: Int = -1
     private(set) var framesDropped = 0
     private(set) var videoFrames = 0
@@ -396,6 +411,9 @@ final class CameraManager: NSObject, ObservableObject {
     func switchSynthLens(_ kind: SyntheticLensKind) {
         guard synthFallbackActive else { return }
         SyntheticCameraSource.shared.lensKind = kind
+        // 摄位切换重建图案可能有 >0.5s 帧间隙(4K 软渲染),但时钟未断 —— 豁免 PTS 重对齐,
+        // 否则 startSession 重调会把切换前已录内容整体剪掉(实测 16s 录成 11.7s)
+        suppressPTSGuardUntil = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()).convertScale(900, method: .default), CMTime(value: 15, timescale: 10))
     }
 
     /// 切换主摄(录像中禁止,避免写坏文件)。
@@ -473,7 +491,7 @@ final class CameraManager: NSObject, ObservableObject {
         #endif
     }
 
-    private func activeFormatMaxZoom() -> Double {
+    func activeFormatMaxZoom() -> Double {   // internal:AutomationServer /zoom 回包需同一 clamp 上限
         #if os(iOS)
         // 无源态(等待设备/权限未决):不设光学上限,保留目标值,设备上线后按实际 format 再收敛
         guard let d = activeMainDevice else { return DevicePolicy.qualityCeilingZoom }
@@ -561,9 +579,11 @@ final class CameraManager: NSObject, ObservableObject {
 
         // 显式拉 1080p:默认 preset(.high)在该设备给 720p sample buffer,
         // 与 writer 声明的 1080p 不匹配 → 录像帧坐标错位(PIP 烧入被裁切的真实根因)
-        let canHD = session.canSetSessionPreset(.hd1920x1080)
-        if canHD { session.sessionPreset = .hd1920x1080 }
-        NSLog("[KinetCamera] session preset hd1920x1080 canSet=\(canHD) → \(session.sessionPreset.rawValue) (\(session.sessionPreset))")
+        let q = recordingQuality
+        let canPreset = session.canSetSessionPreset(q.sessionPreset)
+        if canPreset { session.sessionPreset = q.sessionPreset }
+        else if session.canSetSessionPreset(.hd1920x1080) { session.sessionPreset = .hd1920x1080 }
+        NSLog("[KinetCamera] session preset \(q.rawValue) canSet=\(canPreset) → \(session.sessionPreset.rawValue) (\(session.sessionPreset))")
 
         videoDataOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -732,23 +752,52 @@ final class CameraManager: NSObject, ObservableObject {
             // 锁定最大分辨率 format:仅设 frameDuration 不改 format,
             // macOS 27 上 MacBook Air 相机 session preset 1080p 仍给 720p buffer,
             // 必须显式选含 1920x1080 的 format 让 session/output 协商到 1080p
+            let q = recordingQuality
             let candidates = device.formats.filter { fmt in
                 let d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
-                return d.width >= 1920 && d.height >= 1080
-                    && fmt.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 30 }
+                return d.width >= q.minWidth && d.height >= q.minWidth * 9 / 16
+                    && fmt.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= CGFloat(q.fps) }
             }
             if let best = candidates.last, best != device.activeFormat {
                 device.activeFormat = best
-                NSLog("[KinetCamera] locked format \(CMVideoFormatDescriptionGetDimensions(best.formatDescription).width)x\(CMVideoFormatDescriptionGetDimensions(best.formatDescription).height)")
+                NSLog("[KinetCamera] locked format \(CMVideoFormatDescriptionGetDimensions(best.formatDescription).width)x\(CMVideoFormatDescriptionGetDimensions(best.formatDescription).height) for \(q.rawValue)")
             }
             let fpsMax = device.activeFormat.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 30.0
-            if fpsMax >= 30.0 {
-                device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-                device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            if fpsMax >= CGFloat(q.fps) {
+                device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: q.fps)
+                device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: q.fps)
             }
             device.unlockForConfiguration()
         } catch {
             NSLog("[KinetCamera] lockForConfiguration failed: \(error)")
+        }
+    }
+
+    /// 切录像质量档:录制中拒绝;停会话→应用档位→重锁 format/fps→重启
+    func setRecordingQuality(_ q: RecordingQuality) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard !self.isRecording else {
+                DispatchQueue.main.async { self.lastError = "录制中不可切换质量档" }
+                return
+            }
+            guard q != self.recordingQuality else { return }
+            self.recordingQuality = q
+            self.session.stopRunning()
+            // 借现有重配路径:preset 在 session build 处读档,format/fps 在 unlock 读档。
+            // 合成源回退态 devices 为空(无 AVCaptureDevice 可锁),跳过 format 锁定只跑空会话路径。
+            if let device = self.devices.first(where: { $0.uniqueID == self.activeDeviceID }) ?? self.devices.first {
+                self.unlockMaxResolutionLocked(device)
+            } else if SyntheticCameraSource.shared.isActive {
+                // 合成源态:发射规格跟档位(4K60→3840x2160@60)
+                let spec: (Int, Int, Int, String) = q == .uhd4k60
+                    ? (3840, 2160, 60, "4K60")
+                    : (1920, 1080, 30, "1080p30")
+                SyntheticCameraSource.shared.specLabel = spec.3
+                SyntheticCameraSource.shared.applySpec(width: spec.0, height: spec.1, fps: spec.2)
+            }
+            self.session.startRunning()
+            NSLog("[KinetCamera] recordingQuality → \(q.rawValue)")
         }
     }
 
@@ -794,6 +843,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
 
     /// 视频帧统一入口(硬件源/合成源共用)
     fileprivate func ingestPixelBuffer(_ pixelBuffer: CVPixelBuffer, time: CMTime) {
+        lastIngestDims = (CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer))
         var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
         // AE 锁定软件闭环:锁定后把每帧亮度拉回锁定瞬间
@@ -852,7 +902,7 @@ extension CameraManager {
         formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
         let stamp = formatter.string(from: Date())
 
-        // JPEG + EXIF(主交付,CGImageSource 直读)
+        // JPEG + EXIF + ICC(Display P3:ImageIO 自动嵌源色彩空间,相册跨设备色彩不走运)
         let jpegURL = dir.appendingPathComponent("KinetCamera-\(stamp).jpg")
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(
@@ -862,7 +912,8 @@ extension CameraManager {
             kCGImagePropertyExifDictionary: exif,
             kCGImagePropertyTIFFDictionary: tiff,
         ]
-        CGImageDestinationAddImage(dest, cg, props as CFDictionary)
+        let cgP3 = Self.rebindToP3(cg)
+        CGImageDestinationAddImage(dest, cgP3, props as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         try? (out as Data).write(to: jpegURL)
 
@@ -888,10 +939,10 @@ extension CameraManager {
             kCGImagePropertyTIFFDateTime as String: now,
         ]
         if let d = device {
-            tiff[kCGImagePropertyTIFFMake as String] = d.manufacturer
-            tiff[kCGImagePropertyTIFFModel as String] = d.localizedName
-            exif[kCGImagePropertyExifLensMake as String] = d.manufacturer
-            exif[kCGImagePropertyExifLensModel as String] = d.localizedName
+            tiff[kCGImagePropertyTIFFMake as String] = d.manufacturer.isEmpty ? "KinetCamera" : d.manufacturer
+            tiff[kCGImagePropertyTIFFModel as String] = d.localizedName.isEmpty ? "KinetCamera" : d.localizedName
+            exif[kCGImagePropertyExifLensMake as String] = d.manufacturer.isEmpty ? "KinetCamera" : d.manufacturer
+            exif[kCGImagePropertyExifLensModel as String] = d.localizedName.isEmpty ? "KinetCamera" : d.localizedName
             exif[kCGImagePropertyExifExposureProgram as String] = 2   // Program AE(相机自动)
             exif[kCGImagePropertyExifWhiteBalance as String] = 0      // Auto WB
             #if os(iOS)
@@ -904,6 +955,12 @@ extension CameraManager {
             let fov = d.activeFormat.videoFieldOfView
             if fov > 0 { exif[kCGImagePropertyExifFocalLength as String] = Float(35.0 / tan(fov * .pi / 360.0)) }
             #endif
+        } else {
+            // 合成源/无设备态:宁写自证字段,不裸奔(EXIF 消费链依赖 Make/Model 存在性判可信)
+            tiff[kCGImagePropertyTIFFMake as String] = "KinetCamera"
+            tiff[kCGImagePropertyTIFFModel as String] = "KinetCamera Virtual Camera"
+            exif[kCGImagePropertyExifLensMake as String] = "KinetCamera"
+            exif[kCGImagePropertyExifLensModel as String] = "KinetCamera Virtual Camera"
         }
         return (exif, tiff)
     }
@@ -929,6 +986,26 @@ extension CameraManager {
     }
 
     static func saveMOV(_ url: URL) {}
+
+    /// 把 CGImage 重绑到 Display P3(拍照路径一次性成本,非实时)。
+    /// ImageIO 写 JPEG 时会自动嵌入源色彩空间的 ICC → 交付底线。
+    static func rebindToP3(_ src: CGImage) -> CGImage {
+        guard let p3 = CGColorSpace(name: CGColorSpace.displayP3) else { return src }
+        if src.colorSpace?.model == .rgb, src.colorSpace == p3 { return src }
+        let w = src.width, h = src.height
+        var img = src
+        if let ctx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: p3,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) {
+            ctx.interpolationQuality = .none   // 1:1 拷贝,零重采样
+            ctx.draw(src, in: CGRect(x: 0, y: 0, width: w, height: h))
+            if let out = ctx.makeImage() { img = out }
+        }
+        return img
+    }
 }
 
 // MARK: - 美颜录像(AVAssetWriter,视频帧过实时滤镜链)
@@ -1252,7 +1329,8 @@ extension CameraManager {
             // 视为时基断裂,丢弃该帧并把 session 起点重新对齐到新时基。
             if let last = lastVideoPTS {
                 let delta = CMTimeSubtract(time, last).seconds
-                if DevicePolicy.isPTSDiscontinuity(deltaSeconds: delta) {
+                let suppressed = suppressPTSGuardUntil.isValid && CMTimeCompare(time, suppressPTSGuardUntil) <= 0
+                if DevicePolicy.isPTSDiscontinuity(deltaSeconds: delta), !suppressed {
                     NSLog("[KinetCamera] video PTS jump %.3fs detected — realigning session to new device timebase", delta)
                     writer.startSession(atSourceTime: time)
                     sessionStartPTS = time
@@ -1263,6 +1341,28 @@ extension CameraManager {
         }
 
         var outBuffer: CVPixelBuffer? = src
+        // 尺寸守卫:帧尺寸必须与 adaptor 声明一致(切档后首帧竞态/设备协商差异),
+        // 不一致 append 会静默失败;Lanczos 归一到声明尺寸并计数暴露
+        if let buf = outBuffer {
+            let (ew, eh) = currentVideoDimensions()  // writer 起点声明值
+            let (fw, fh) = (CVPixelBufferGetWidth(buf), CVPixelBufferGetHeight(buf))
+            if fw != ew || fh != eh {
+                scaleMismatchCount &+= 1
+                if scaleMismatchCount == 1 {
+                    NSLog("[KinetCamera] writer dims \(ew)x\(eh) but frame \(fw)x\(fh) — rescaling")
+                }
+                let scaled = CIImage(cvPixelBuffer: buf)
+                    .transformed(by: CGAffineTransform(scaleX: CGFloat(ew)/CGFloat(fw), y: CGFloat(eh)/CGFloat(fh)))
+                if let pool = pixelBufferAdaptor?.pixelBufferPool {
+                    var maybe: CVPixelBuffer?
+                    CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &maybe)
+                    if let dst = maybe {
+                        FilterPipeline.shared.renderContext.render(scaled, to: dst)
+                        outBuffer = dst
+                    }
+                }
+            }
+        }
         if let recordFilter {
             let ci = CIImage(cvPixelBuffer: src)
             let t0 = CFAbsoluteTimeGetCurrent()

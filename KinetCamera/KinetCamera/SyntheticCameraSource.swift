@@ -44,8 +44,29 @@ final class SyntheticCameraSource: NSObject {
     private var basePatternStride: Int?
     private var basePatternBucket: UInt8 = 0
     private var stride_: Int { width * 4 }
-    private let width = 1280
-    private let height = 720
+    // 规格跟录像质量档走(4K60 档发 3840x2160@60 语义帧,1080p 档发 1920x1080@30):
+    // 发射规格与 writer 声明尺寸一致是硬约束(坐标错位教训见 CameraManager preset 注释)
+    private var width = 1280
+    private var height = 720
+    private var tickMs = 33
+    var specLabel: String = "720p30"
+
+    /// 应用新规格(停→改→启;queue 内串行安全)
+    func applySpec(width w: Int, height h: Int, fps: Int) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.displayLink?.cancel()
+            self.displayLink = nil
+            self.width = w
+            self.height = h
+            self.tickMs = 1000 / fps
+            self.basePattern = nil
+            self.basePatternStride = nil
+            self.pool = nil
+            self.isActive = false
+            self.start()
+        }
+    }
     /// PTS 挂墙钟:文件时长=真实录制时长(若用帧序号,实际出帧率低于30fps时时长会虚高)
     private var startWall: CFTimeInterval = 0
     var onPixelBuffer: ((CVPixelBuffer, CMTime) -> Void)?
@@ -72,11 +93,11 @@ final class SyntheticCameraSource: NSObject {
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             // 不设 leeway 时系统默认可合并到数百 ms(实测 33ms 定时器只跑出 7fps),
             // 显式压到 1ms 保证 30fps 节拍
-            timer.schedule(deadline: .now(), repeating: .milliseconds(33), leeway: .milliseconds(1))
+            timer.schedule(deadline: .now(), repeating: .milliseconds(self.tickMs), leeway: .milliseconds(1))
             timer.setEventHandler { [weak self] in self?.emitFrame() }
             timer.resume()
             self.displayLink = timer
-            NSLog("[KinetSynthetic] started 30fps %dx%d", self.width, self.height)
+            NSLog("[KinetSynthetic] started %@ %dx%d tick=%dms", self.specLabel, self.width, self.height, self.tickMs)
         }
     }
 

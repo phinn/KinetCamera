@@ -137,10 +137,11 @@ final class AutomationServer {
                 f = Double(s) ?? 1.0
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self, let vm = self.vm else { return }
+                guard let self, let vm = self.vm else { conn.cancel(); return }
                 vm.setZoom(f)
+                // 回包报 clamp 后的实际收敛值,而非回显请求参数(曾把 f=99 报成 zoom:99)
+                self.reply(conn, json: "{\"ok\":true,\"zoom\":\(vm.manager.zoomFactor)}")
             }
-            reply(conn, json: "{\"ok\":true,\"zoom\":\(f)}")
         case ("POST", "/aelock"):
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .kinetToggleAELock, object: nil)
@@ -194,7 +195,8 @@ final class AutomationServer {
                 ev = s == "auto" ? 0 : (Double(s) ?? 0)
             }
             DispatchQueue.main.async { self.vm?.settings.exposureEV = max(-2, min(2, ev)) }
-            reply(conn, json: "{\"ok\":true,\"exposureEV\":\(ev)}")
+            // 回包报 clamp 后实际值(±2),而非回显请求参数
+            reply(conn, json: "{\"ok\":true,\"exposureEV\":\(max(-2, min(2, ev)))}")
         case ("POST", "/focus"):
             // 对焦锁: /focus?mode=lock(防拉风箱) / mode=auto(交还系统)
             let lock = !target.contains("mode=auto")
@@ -215,13 +217,21 @@ final class AutomationServer {
                 self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\"}")
             }
         case ("POST", "/switch"):
-            // /switch?id=<deviceID> 切主摄
+            // /switch?id=<deviceID> 切主摄。
+            // 先校验 target 在 live 列表里再回 ok;switchDevice 内部 may 静默拒绝(录像中/死设备),
+            // 不能无脑回 ok:true+回显请求 id(曾把切到不存在设备报成成功,误导验收)。
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }
                 if let range = target.range(of: "id=") {
                     let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
+                    let live = vm.manager.devices.map { $0.uniqueID }
+                    guard vm.manager.devices.contains(where: { $0.uniqueID == id }) else {
+                        self.reply(conn, json: "{\"error\":\"device not found\",\"active\":\"\(vm.manager.activeDeviceID ?? "")\",\"requested\":\"\(id)\"}", status: "404 Not Found")
+                        return
+                    }
                     vm.manager.switchDevice(to: id)
-                    self.reply(conn, json: "{\"ok\":true,\"active\":\"\(id)\"}")
+                    // 以切换后的实际主摄为准回包,而非回显请求参数
+                    self.reply(conn, json: "{\"ok\":true,\"active\":\"\(vm.manager.activeDeviceID ?? "")\",\"requested\":\"\(id)\"}")
                 } else {
                     self.reply(conn, json: "{\"error\":\"need id=\"}", status: "400 Bad Request")
                 }
@@ -261,8 +271,14 @@ final class AutomationServer {
                 guard let self, let vm = self.vm else { conn.cancel(); return }
                 if let range = target.range(of: "id=") {
                     let id = String(target[range.upperBound...]).components(separatedBy: "&").first ?? ""
+                    // 校验目标设备存在(屏流伪设备放行);死 id 回 404,不把失败报成 ok
+                    let isScreen = (id == CameraManager.screenPseudoID)
+                    guard isScreen || vm.manager.devices.contains(where: { $0.uniqueID == id }) else {
+                        self.reply(conn, json: "{\"error\":\"device not found\",\"requested\":\"\(id)\"}", status: "404 Not Found")
+                        return
+                    }
                     vm.togglePIP(id)
-                    self.reply(conn, json: "{\"ok\":true,\"pip\":\"\(id)\"}")
+                    self.reply(conn, json: "{\"ok\":true,\"pip\":\"\(id)\",\"pipList\":\(vm.manager.pipDeviceIDs)}")
                 } else if target.contains("on=1") {
                     // 全部可用信号源入 PIP:非主摄摄像头 + 屏幕流
                     let others = vm.manager.devices.filter { $0.uniqueID != vm.manager.activeDeviceID }
@@ -382,11 +398,11 @@ final class AutomationServer {
     }
 
     private func reply(_ conn: NWConnection, json: String, status: String = "200 OK") {
-        send(conn, data: Data(json.utf8), contentType: "application/json")
+        send(conn, data: Data(json.utf8), contentType: "application/json", status: status)
     }
 
-    private func send(_ conn: NWConnection, data: Data, contentType: String) {
-        let header = "HTTP/1.1 200 OK\r\nContent-Type: \(contentType)\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n"
+    private func send(_ conn: NWConnection, data: Data, contentType: String, status: String = "200 OK") {
+        let header = "HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n"
         var out = Data(header.utf8)
         out.append(data)
         conn.send(content: out, completion: .contentProcessed { _ in

@@ -14,6 +14,7 @@ struct AIAnalysis: Equatable {
     var brightness: Double = 0      // 帧均值亮度 0-1(场景自适应决策输入)
     var tiltAngle: Double = 0       // 水平倾角(度,正=画面向左倾);|角度|>1.2 自动转正
     var fisheyeHint: Double = 0     // 广角畸变线索 0-1(人脸贴边+宽高比异常时升高)
+    var faceRect: CGRect? = nil     // 主脸归一化 bbox(原点左下;脸区加权选帧/再对焦策略输入)
 
     static let empty = AIAnalysis()
 }
@@ -73,6 +74,7 @@ enum AIAnalyzer {
         try? handler.perform([faceRequest])
         let faces = faceRequest.results ?? []
         result.faceCount = faces.count
+        result.faceRect = faces.first?.boundingBox   // 主脸 bbox(脸区加权/对焦策略共用)
 
         // 水平倾角(Vision 官方 horizon 检测):|tilt|>1.2° 才值得自动转正,
         // 小角度日常手持抖动不动它(转正必裁画面,小于阈值的裁切无收益)
@@ -194,6 +196,45 @@ enum AIAnalyzer {
         let variance255 = Double(variance) * 255.0 * 255.0
         let score = min(max(variance255 / 2.5, 0), 100)
         return score
+    }
+
+    /// 人脸 ROI 清晰度分数(P0②:脸区加权选帧)。
+    /// 全图 Laplacian 会被背景纹理/天空污染 —— 抓拍选帧要看"脸糊不糊"而不是"图糊不糊"。
+    /// - faceRect: Vision 归一化 bbox(原点左下),转换到灰度图像素域取 ROI 重算
+    /// - 无脸/ROI 退化 → 回退全图分(调用方无需特判)
+    static func sharpnessScore(cgImage: CGImage, faceRect: CGRect?) -> Double {
+        guard let faceRect, faceRect.width > 0.01, faceRect.height > 0.01 else {
+            return sharpnessScore(cgImage: cgImage)
+        }
+        guard let gray = toGray(cgImage) else { return 50 }
+        let w = gray.width, h = gray.height
+        // Vision 原点左下 → 像素域原点左上;外扩 20%(下颌/发际一起看)
+        let px = faceRect.minX * CGFloat(w)
+        let pw = faceRect.width * CGFloat(w)
+        let ph = faceRect.height * CGFloat(h)
+        let py = (1 - faceRect.maxY) * CGFloat(h)
+        let ex = max(0, px - pw * 0.2), ey = max(0, py - ph * 0.2)
+        let ew = min(CGFloat(w), px + pw * 1.2) - ex
+        let eh = min(CGFloat(h), py + ph * 1.2) - ey
+        guard ew > 8, eh > 8 else { return sharpnessScore(cgImage: cgImage) }
+        let src = gray.pixels
+        var sum: Float = 0
+        var count = 0
+        // ROI 内 4 邻域 Laplacian 绝对值均值(高频能量,同 sharpnessScore 判据域)
+        for y in max(1, Int(ey))..<min(h - 1, Int(ey + eh)) {
+            let row = y * w
+            for x in max(1, Int(ex))..<min(w - 1, Int(ex + ew)) {
+                let i = row + x
+                let lap = 4 * src[i] - src[i - w] - src[i + w] - src[i - 1] - src[i + 1]
+                sum += abs(lap)
+                count += 1
+            }
+        }
+        guard count > 0 else { return sharpnessScore(cgImage: cgImage) }
+        let meanLap = Double(sum / Float(count)) * 255.0
+        // |lap|均值与 variance 域换算:|lap|均值在清晰脸区实测 ~6-14(255 域),糊脸 ~2-4。
+        // 映射:14→100 分,2→0 分线性。
+        return min(max((meanLap - 2.0) / 12.0 * 100.0, 0), 100)
     }
 
     /// 亮度直方图(均值+高光占比),映射到 0-100,50 为理想曝光

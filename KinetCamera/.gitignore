@@ -8,3 +8,4 @@ xcuserdata/
 __pycache__/
 default.profraw
 scripts/tmp/
+docs/evidence/*.mov

@@ -1,0 +1,14 @@
+start {"ok":true,"action":"start"} 15:06:53
+t=1min fps=11 dropped=0 draw=completed ok rec=True
+t=2min fps=9 dropped=0 draw=completed ok rec=True
+t=3min fps=13 dropped=0 draw=completed ok rec=True
+t=4min fps=8 dropped=0 draw=completed ok rec=True
+t=5min fps=10 dropped=0 draw=completed ok rec=True
+t=6min fps=13 dropped=0 draw=completed ok rec=True
+t=7min fps=10 dropped=0 draw=completed ok rec=True
+t=8min fps=12 dropped=0 draw=completed ok rec=True
+t=9min fps=16 dropped=0 draw=completed ok rec=True
+t=10min fps=12 dropped=0 draw=completed ok rec=True
+final_mov=/Users/phinn/Library/Developer/CoreSimulator/Devices/F3FDC20D-9960-4927-8024-FB8660EC1295/data/Containers/Data/Application/8C31BC2F-61D8-4A08-8E23-760E709470B8/Documents/Movies/KinetCamera/KinetCamera-20260927-150653.mov
+duration=600.701667
+done 15:16:58

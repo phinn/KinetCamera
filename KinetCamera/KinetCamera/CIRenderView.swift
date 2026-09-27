@@ -17,21 +17,37 @@ final class CIRenderView: MTKView {
     private(set) var lastDrawError = ""
 
     private let commandQueue: MTLCommandQueue?
+    // 上屏专用 CIContext:与美颜处理链(FilterPipeline.shared.renderContext)分离。
+    // 根因:CIContext 内部 surface 缓存有锁,主线程 draw 的 render 与 videoQueue 的美颜/录像写帧
+    // 共享同一 context 时互相等锁 —— 模拟器软渲染放大暴露,主线程卡在
+    // GetSurfaceFromCacheAndFill → dispatch_sync(实测 sample 栈),表现为 UI 卡死。
+    // 同一 MTLDevice 下两个 context 共享纹理/池,无额外拷贝开销。
     private let context: CIContext
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         let dev = device ?? MTLCreateSystemDefaultDevice()
         commandQueue = dev?.makeCommandQueue()
-        context = FilterPipeline.shared.renderContext
+        context = CIRenderView.makeContext(dev)
         super.init(frame: frameRect, device: dev)
         commonInit()
     }
 
     required init(coder: NSCoder) {
-        commandQueue = MTLCreateSystemDefaultDevice()?.makeCommandQueue()
-        context = FilterPipeline.shared.renderContext
+        let dev = MTLCreateSystemDefaultDevice()
+        commandQueue = dev?.makeCommandQueue()
+        context = CIRenderView.makeContext(dev)
         super.init(coder: coder)
         commonInit()
+    }
+
+    private static func makeContext(_ dev: MTLDevice?) -> CIContext {
+        if let dev {
+            return CIContext(mtlDevice: dev, options: [
+                .cacheIntermediates: false,
+                .workingColorSpace: NSNull(),
+            ])
+        }
+        return CIContext(options: [.cacheIntermediates: false])
     }
 
     private func commonInit() {

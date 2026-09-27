@@ -524,6 +524,8 @@ final class CameraViewModel: ObservableObject {
 
     // MARK: - 相机操作转发
     func switchDevice(_ id: String) { manager.switchDevice(to: id) }
+    /// 无源态重试:UI 就绪后再枚举一次(启动早期 TCC/设备枚举可能未就绪)
+    func retryDeviceDiscovery() { manager.refreshDevices() }
     func togglePIP(_ id: String) { manager.togglePIP(id) }
 
     // MARK: - 手动曝光/对焦

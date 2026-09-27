@@ -19,6 +19,8 @@ targets:
       - path: KinetCamera
         excludes:
           - "Assets.xcassets"               # macOS 用 iconset(Xcode 自动转 icns),xcassets 归 iOS
+          # 注意:AppIcon.iconset 必须保留在 macOS sources(Xcode 转成 AppIcon.icns 进 bundle),
+          # 只在 iOS target excludes——iOS 曾被塞 1.5MB icns,是 iPhone 存储堵点之一
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kinet.KinetCamera
@@ -48,6 +50,7 @@ targets:
           - "SyntheticCameraSource.swift"   # 合成源依赖 CGDisplayStream(macOS only)
           - "Info.plist"                    # macOS 版 plist,防 Multiple commands produce
           - "Resources"                     # icns 归 macOS
+          - "AppIcon.iconset"               # iconset 源目录禁止进 Resources(1.5MB AppIcon.icns 混入根因,iPhone 存储堵点之一)
       - path: KinetCamera/Assets.xcassets   # iOS 图标(appiconset 单 1024)
     settings:
       base:

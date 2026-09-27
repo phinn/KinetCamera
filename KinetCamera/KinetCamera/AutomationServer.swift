@@ -105,10 +105,35 @@ final class AutomationServer {
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"capture\"}")
         case ("POST", "/record"):
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .kinetToggleRecord, object: nil)
+            // /record                 → toggle(兼容既有脚本)
+            // /record?action=start    → 幂等启动(已在录则回 already,不误停)
+            // /record?action=stop     → 幂等停止(未在录则回 idle)
+            var action = "toggle"
+            if let r = target.range(of: "action=") {
+                action = target[r.upperBound...].components(separatedBy: "&").first ?? "toggle"
             }
-            reply(conn, json: "{\"ok\":true,\"action\":\"record-toggle\"}")
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                switch action {
+                case "start":
+                    if vm.manager.isRecording {
+                        self.reply(conn, json: "{\"ok\":true,\"action\":\"already-recording\"}")
+                    } else {
+                        NotificationCenter.default.post(name: .kinetStartRecord, object: nil)
+                        self.reply(conn, json: "{\"ok\":true,\"action\":\"start\"}")
+                    }
+                case "stop":
+                    if vm.manager.isRecording {
+                        NotificationCenter.default.post(name: .kinetStopRecord, object: nil)
+                        self.reply(conn, json: "{\"ok\":true,\"action\":\"stop\"}")
+                    } else {
+                        self.reply(conn, json: "{\"ok\":true,\"action\":\"idle\"}")
+                    }
+                default:
+                    NotificationCenter.default.post(name: .kinetToggleRecord, object: nil)
+                    self.reply(conn, json: "{\"ok\":true,\"action\":\"record-toggle\"}")
+                }
+            }
         case ("POST", "/night"):
             DispatchQueue.main.async { [weak self] in
                 self?.vm?.captureNight()   // 直调 vm:通知路径依赖 SwiftUI 场景挂载,后台启动时视图树不存活会丢
@@ -129,6 +154,21 @@ final class AutomationServer {
                 NotificationCenter.default.post(name: .kinetCaptureBurst, object: nil)
             }
             reply(conn, json: "{\"ok\":true,\"action\":\"burst\"}")
+        case ("POST", "/video"):
+            // /video?preset=hd1080p30|uhd4k60 —— 录像质量档切换(录制中拒绝)
+            var preset = ""
+            if let r = target.range(of: "preset=") {
+                preset = target[r.upperBound...].components(separatedBy: "&").first ?? ""
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let vm = self.vm else { conn.cancel(); return }
+                guard let q = CameraManager.RecordingQuality(rawValue: preset) else {
+                    self.reply(conn, json: "{\"error\":\"bad preset, expect hd1080p30|uhd4k60\"}")
+                    return
+                }
+                vm.manager.setRecordingQuality(q)
+                self.reply(conn, json: "{\"ok\":true,\"preset\":\"\(q.rawValue)\",\"fps\":\(q.fps)}")
+            }
         case ("POST", "/zoom"):
             // 变焦: /zoom?f=2.5 (硬件 zoomFactor 优先,软件裁切兜底) / /zoom?f=1 复位
             var f = 1.0
@@ -139,8 +179,10 @@ final class AutomationServer {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }
                 vm.setZoom(f)
-                // 回包报 clamp 后的实际收敛值,而非回显请求参数(曾把 f=99 报成 zoom:99)
-                self.reply(conn, json: "{\"ok\":true,\"zoom\":\(vm.manager.zoomFactor)}")
+                // 回包报 clamp 后的目标收敛值(与 setZoom 内部同一 clamp 路径)。
+                // 勿读 manager.zoomFactor:easeOutCubic 动画进行中它还是旧值,回包恒滞后一拍。
+                let target = DevicePolicy.clampZoom(f, formatMax: vm.manager.activeFormatMaxZoom())
+                self.reply(conn, json: "{\"ok\":true,\"zoom\":\(target)}")
             }
         case ("POST", "/aelock"):
             DispatchQueue.main.async {
@@ -357,6 +399,8 @@ final class AutomationServer {
                 "recordingError": m.lastRecordingError as Any?,
                 "appendAttempts": m.appendAttempts,
                 "videoAppendFailures": m.videoAppendFailures,
+                "backgroundInterruptedDuringRecord": vm.backgroundInterruptedDuringRecord,
+                "scaleMismatch": m.scaleMismatchCount,
                 "lastAppendErrorCode": m.lastAppendErrorCode,
                 "blur": (vm.lastAnalysis.blurScore * 10).rounded() / 10,
                 "exposure": (vm.lastAnalysis.exposureScore * 10).rounded() / 10,
@@ -373,6 +417,8 @@ final class AutomationServer {
                 "videoFrames": m.videoFrames,
                 "audioFrames": m.audioFrames,
                 "syntheticActive": Self.syntheticActive,
+                "recordingQuality": m.recordingQuality.rawValue,
+                "recordFpsTarget": m.recordingQuality.fps,
                 "micAuthStatus": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
                 "micName": m.activeMicName,
                 "deviceNames": m.devices.map { $0.localizedName },

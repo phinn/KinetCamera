@@ -253,6 +253,11 @@ struct iOSRootView: View {
     @State private var showSettings = false
 
     var body: some View {
+        bodyContent
+            .onAppear { vm.retryDeviceDiscovery() }
+    }
+
+    private var bodyContent: some View {
         ZStack {
             // 全屏预览(4:3 内容居中,黑边留白,不裁切画面)
             PreviewView(vm: vm)
@@ -282,7 +287,7 @@ struct iOSRootView: View {
             }
 
             VStack(spacing: 0) {
-                CameraTopBar(vm: vm)
+                CameraTopBar(vm: vm, manager: vm.manager)
                 Spacer()
                 // 实时指标条(录像红点/静音告警/处理帧率,拍_VIDEO 时可见)
                 if vm.manager.isRecording {
@@ -320,6 +325,8 @@ struct iOSRootView: View {
 /// 顶部摄位条:0.5×/1×/5× 硬件镜头位(苹果式,选中加粗白,未选灰)
 struct CameraTopBar: View {
     @ObservedObject var vm: CameraViewModel
+    // manager 自身也是 ObservableObject:合成回退态(synthFallbackActive)切换必须驱动重渲染
+    @ObservedObject var manager: CameraManager
 
     var body: some View {
         HStack(spacing: 26) {
@@ -334,7 +341,22 @@ struct CameraTopBar: View {
                     .foregroundColor(.white.opacity(0.85))
             }
 
-            if vm.manager.lensCandidates.count > 1 {
+            if vm.manager.synthFallbackActive {
+                // 无源态(模拟器):虚拟摄位条,与真机三摄同一交互
+                let synthLenses: [(SyntheticLensKind, String)] = [(.ultrawide, "0.5×"), (.wide, "1×"), (.tele, "5×")]
+                ForEach(synthLenses, id: \.1) { kind, label in
+                    let selected = SyntheticCameraSource.shared.lensKind == kind
+                    Button {
+                        vm.manager.switchSynthLens(kind)
+                    } label: {
+                        Text(label)
+                            .font(.system(size: selected ? 15 : 14,
+                                          weight: selected ? .bold : .regular,
+                                          design: .rounded))
+                            .foregroundColor(selected ? .yellow : .white.opacity(0.65))
+                    }
+                }
+            } else if vm.manager.lensCandidates.count > 1 {
                 ForEach(vm.manager.lensCandidates, id: \.device.uniqueID) { cand in
                     let selected = vm.manager.activeDeviceID == cand.device.uniqueID
                     Button {

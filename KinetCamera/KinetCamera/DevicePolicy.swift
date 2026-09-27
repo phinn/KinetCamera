@@ -29,9 +29,11 @@ enum DevicePolicy {
 
     /// 变焦钳制:下限 1.0(不缩),上限取「格式上限」与「8.0 画质红线」较小者。
     /// >8x 数码放大糊穿,宁可给不到也不出马赛克。
+    /// 画质红线:数码变焦超 8× 噪声爆炸,硬顶
+    static let qualityCeilingZoom = 8.0
+
     static func clampZoom(_ factor: Double, formatMax: Double) -> Double {
-        let qualityCeiling = 8.0
-        let upper = min(formatMax, qualityCeiling)
+        let upper = min(formatMax, qualityCeilingZoom)
         return min(max(1.0, factor), max(1.0, upper))
     }
 

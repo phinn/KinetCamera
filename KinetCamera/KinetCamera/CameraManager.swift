@@ -432,7 +432,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func activeFormatMaxZoom() -> Double {
         #if os(iOS)
-        guard let d = activeMainDevice else { return 1.0 }
+        // 无源态(等待设备/权限未决):不设光学上限,保留目标值,设备上线后按实际 format 再收敛
+        guard let d = activeMainDevice else { return DevicePolicy.qualityCeilingZoom }
         return d.activeFormat.videoMaxZoomFactor
         #else
         return 1.0   // macOS 无硬件变焦 API,软件档上限由 DevicePolicy 画质红线兜底

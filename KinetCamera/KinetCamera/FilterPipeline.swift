@@ -145,17 +145,31 @@ final class FilterPipeline {
                         kCIInputRadiusKey: 2.0 + settings.smoothing * 6.0,
                     ])
                     .cropped(to: image.extent)
-                image = blurred.applyingFilter("CIBlendWithMask", parameters: [
+                // 强度参与混合(此前 s 只进 radius,4→12px 早饱和 → 同帧 SSIM 0.995 的根因):
+                // 先用常数灰 mask 把"磨皮模糊图 vs 原图"消融到 α(s),再叠肤色掩膜空间限定。
+                // 常数灰 mask + CIBlendWithMask = amount 混合(已验证通路;BlendWithLinearAmount 在
+                // macOS 27 对 BlendWithMask 输出求值返回空 extent,禁用)。
+                let alphaS = 0.55 + settings.smoothing * 0.45
+                let amountMask = CIImage(color: CIColor(red: CGFloat(alphaS), green: CGFloat(alphaS), blue: CGFloat(alphaS)))
+                    .cropped(to: image.extent)
+                let faded = blurred.applyingFilter("CIBlendWithMask", parameters: [
                     kCIInputImageKey: blurred,
+                    kCIInputBackgroundImageKey: image,
+                    kCIInputMaskImageKey: amountMask,
+                ])
+                // faded = α·blur + (1-α)·原图(全图);再按肤色掩膜混回原图 → 只磨肤区
+                image = faded.applyingFilter("CIBlendWithMask", parameters: [
+                    kCIInputImageKey: faded,
                     kCIInputBackgroundImageKey: image,
                     kCIInputMaskImageKey: skinMask,
                 ])
             }
             // 美白:肤色掩膜内亮度抬升+冷白 bias(与拍照同参)
             if settings.whitening > 0 {
-                let lift = settings.whitening
+                // gamma 0.7 感知化:w=0.6 → 实际 0.7(线性 0.6 在亮肤上 R-B 位移仅 ~6 级,肉眼难辨)
+                let lift = pow(settings.whitening, 0.7)
                 let bright = image.applyingFilter("CIColorControls", parameters: [
-                    kCIInputBrightnessKey: 0.05 * lift,
+                    kCIInputBrightnessKey: 0.07 * lift,
                     kCIInputContrastKey: 1.0 + 0.02 * lift,
                 ]).applyingFilter("CIColorMatrix", parameters: [
                     "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
@@ -218,21 +232,9 @@ final class FilterPipeline {
                     // 掩膜 1px 盒滤波柔化(与导向滤波同积分图实现)
                     mask = GuidedFilter.boxBlur(mask, w: sw, h: sh, r: 2)
                 }
-                // ---- CPU pass 3:美白增益(只作用于掩膜内:抬亮度+去黄) ----
+                // ---- CPU pass 3:美白增益已迁移到 pass5(全尺寸焊接后)----
+                // 2026-09-27 根因:美白在小域做,升采样后被边缘焊接当噪声差焊回原图,B+14 被吃成 +2
                 var outR = g.r, outG = g.g, outB = g.b
-                if settings.whitening > 0 {
-                    let w = Float(settings.whitening)
-                    for i in 0..<n {
-                        let m = mask[i]
-                        guard m > 0.01 else { continue }
-                        let r = Float(outR[i]), gc = Float(outG[i]), b = Float(outB[i])
-                        // 抬亮:+0.09w;去黄:B+0.05w G+0.01w R-0.01w(冷白偏移)
-                        let lift = m * w
-                        outR[i] = UInt8(max(0, min(255, r * (1 - 0.012 * lift) + 6 * lift)))
-                        outG[i] = UInt8(max(0, min(255, gc + 0.01 * lift * gc + 3 * lift)))
-                        outB[i] = UInt8(max(0, min(255, b + 0.05 * lift * b + 6 * lift)))
-                    }
-                }
                 // ---- CPU pass 2.5:噪声水平估计(自适应保边阈值的基础) ----
                 // 高频残差 MAD×1.4826 = 稳健 σ 估计(MAD 对结构边缘不敏感,均值会被发丝拉高)
                 // σ_255 = 噪声标准差(0-255 域)。暗光高 ISO → σ 大 → 阈值 t 大(压噪优先);
@@ -292,6 +294,8 @@ final class FilterPipeline {
                        let (fullBytes, fw, fh) = GuidedFilter.rgba(of: fullCG), fw == uw {
                         // 软阈值(与 pass4 同源):2.5σ 内压掉,超出按比例回注
                         let thr: Float = max(8, lastNoiseSigma * 1.5)
+                        // 强度 α 直接决定磨皮与原图最终配比(此前恒=1,s 形同虚设)
+                        let alpha = 0.35 + 0.65 * Float(settings.smoothing)
                         var fin = [UInt8](repeating: 0, count: uw * uh * 4)
                         for i in 0..<(uw * uh) {
                             let i4 = i * 4
@@ -300,11 +304,41 @@ final class FilterPipeline {
                             // 跨通道取 |hf| 最大者作边缘置信度(避免单通道偶然抵消)
                             let m = max(abs(oR-gR), abs(oG-gG), abs(oB-gB))
                             let wE = m > thr ? (m - thr) / m : 0
-                            fin[i4]   = UInt8(max(0, min(255, gR + wE * (oR - gR))))
-                            fin[i4+1] = UInt8(max(0, min(255, gG + wE * (oG - gG))))
-                            fin[i4+2] = UInt8(max(0, min(255, gB + wE * (oB - gB))))
+                            // 焊接结果与原图按 α 混:α 低 → 向原图回退,s 高 → 全量磨皮
+                            fin[i4]   = UInt8(max(0, min(255, (gR + wE * (oR - gR)) * alpha + oR * (1 - alpha))))
+                            fin[i4+1] = UInt8(max(0, min(255, (gG + wE * (oG - gG)) * alpha + oG * (1 - alpha))))
+                            fin[i4+2] = UInt8(max(0, min(255, (gB + wE * (oB - gB)) * alpha + oB * (1 - alpha))))
                             fin[i4+3] = 255
                         }
+                        // ---- CPU pass 5:全尺寸美白(焊接之后,不被 wE 吃掉)----
+                        if settings.whitening > 0 {
+                            let w = Float(pow(settings.whitening, 0.7))   // gamma 0.7 感知化
+                            for i in 0..<(uw * uh) {
+                                let i4 = i * 4
+                                let r = Float(fin[i4]) / 255, gc = Float(fin[i4+1]) / 255, b = Float(fin[i4+2]) / 255
+                                let y = 0.299*r + 0.587*gc + 0.114*b
+                                let cb = -0.168736*r - 0.331264*gc + 0.5*b + 0.5
+                                let cr = 0.5*r - 0.418688*gc - 0.081312*b + 0.5
+                                func soft(_ v: Float, _ lo: Float, _ hi: Float) -> Float {
+                                    let e: Float = 0.03
+                                    if v < lo - e || v > hi + e { return 0 }
+                                    if v < lo { return min(max((v - (lo - e)) / e, 0), 1) }
+                                    if v > hi { return min(max(((hi + e) - v) / e, 0), 1) }
+                                    return 1
+                                }
+                                let m = soft(cr, 0.52, 0.72) * soft(cb, 0.33, 0.48) * (y > 0.15 && y < 0.97 ? 1 : 0)
+                                guard m > 0.01 else { continue }
+                                let lift = m * w
+                                // 去黄主刀:B +14w(冷白偏移)+ R -2.5%w;抬亮 G +4w。w=1 → R-B 位移约 -18 级
+                                let nr = r * 255 * (1 - 0.025 * lift) + 4 * lift
+                                let ng = gc * 255 * (1 + 0.015 * lift) + 4 * lift
+                                let nb = b * 255 * (1 + 0.10 * lift) + 14 * lift
+                                fin[i4]   = UInt8(max(0, min(255, nr)))
+                                fin[i4+1] = UInt8(max(0, min(255, ng)))
+                                fin[i4+2] = UInt8(max(0, min(255, nb)))
+                            }
+                        }
+                        if quality == .photo { NSLog("[KinetWeld] welded n=\(uw*uh) alpha=\(alpha) whitened=\(settings.whitening > 0)") }
                         if let finCG = GuidedFilter.cgImageRGBA(fin, w: uw, h: uh) {
                             image = CIImage(cgImage: finCG)
                         } else {

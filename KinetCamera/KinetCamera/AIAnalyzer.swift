@@ -11,6 +11,7 @@ struct AIAnalysis: Equatable {
     var compositionHint: String? = nil
     var suggestion: String? = nil   // 一句话建议
     var colorCast: Double = 0       // 色偏:R-B 通道均值差(0-255 域);>12 偏红,<-12 偏蓝
+    var brightness: Double = 0      // 帧均值亮度 0-1(场景自适应决策输入)
     var tiltAngle: Double = 0       // 水平倾角(度,正=画面向左倾);|角度|>1.2 自动转正
     var fisheyeHint: Double = 0     // 广角畸变线索 0-1(人脸贴边+宽高比异常时升高)
 
@@ -64,6 +65,7 @@ enum AIAnalyzer {
         result.exposureScore = exposureScore(cgImage: cg)
         result.exposureBias = exposureBias(cgImage: cg)
         result.colorCast = colorCast(cg)
+        result.brightness = exposureStats(cgImage: cg).mean / 255.0   // 场景自适应决策输入
 
         // 人脸(用于构图建议)
         let faceRequest = VNDetectFaceRectanglesRequest()

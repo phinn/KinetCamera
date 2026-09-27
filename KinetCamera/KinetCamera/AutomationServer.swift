@@ -348,6 +348,8 @@ final class AutomationServer {
                 "ringCount": m.ringCount,
                 "aeLocked": m.isAELocked,
                 "zoom": m.zoomFactor,
+                "autoAdapt": vm.autoAdapt,
+                "adaptReason": vm.lastAdjustment.reason,
                 "zoomMode": m.zoomIsHardware ? "hardware" : "software",
                 "colorCast": (vm.lastAnalysis.colorCast * 10).rounded() / 10,
                 "pipFrames": vm.pipFrames.map { "\($0.key):\($0.value.extent.width)x\(Int($0.value.extent.height))" },

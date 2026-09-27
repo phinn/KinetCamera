@@ -527,6 +527,13 @@ struct SidePanelView: View {
                             Text(String(format: "%+.0f", vm.settings.saturation * 100))
                                 .font(.caption.monospacedDigit()).frame(width: 34)
                         }
+                        Divider()
+                        Toggle("AI 场景自适应(暗光加压噪/强光保质感)", isOn: $vm.autoAdapt)
+                            .font(.caption)
+                        if vm.autoAdapt, !vm.lastAdjustment.isNeutral {
+                            Text(vm.lastAdjustment.reason)
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }

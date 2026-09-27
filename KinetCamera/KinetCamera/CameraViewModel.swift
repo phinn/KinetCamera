@@ -95,7 +95,7 @@ final class CameraViewModel: ObservableObject {
         // 预览走 .video GPU 快速档(与录像同路径,30fps 可达):
         // .photo 档的全尺寸导向滤波 CPU pass 在预览路径会把帧率压到 7-14fps(实测)。
         // 拍照/回溯/连拍落盘仍走各自显式的 .photo 全画质链(170/245/335 行),互不影响。
-        let filtered = pipeline.apply(raw, settings: settings, time: .zero, quality: .video)
+        let filtered = pipeline.apply(raw, settings: effectiveSettings, time: .zero, quality: .video)
         frameCount &+= 1
         // 实时处理帧率(美颜链后):滑动窗口,最近 1s 计数,给 /status 美颜 fps 验收
         fpsWindow.append(CFAbsoluteTimeGetCurrent())
@@ -114,10 +114,43 @@ final class CameraViewModel: ObservableObject {
                 let result = AIAnalyzer.analyze(filtered, context: ctx)
                 await MainActor.run { [weak self] in
                     self?.lastAnalysis = result
+                    self?.applyAutoAdjustment()
                     self?.analysisInFlight = false
                 }
             }
         }
+    }
+
+    // MARK: - AI 场景自适应(CorrectionEngine 决策层)
+    /// 微调偏移独立于用户滑杆:用户值不动,自适应偏移在渲染前叠加,reason 可在 UI 展示
+    @Published private(set) var lastAdjustment = BeautyAdjustment.neutral
+    /// 自动档开关(默认开;UI 加 toggle,关=纯手动零干预)
+    @Published var autoAdapt = true
+
+    private func applyAutoAdjustment() {
+        guard autoAdapt else {
+            if !lastAdjustment.isNeutral { lastAdjustment = .neutral }
+            return
+        }
+        let adj = CorrectionEngine.autoAdjust(
+            brightness: lastAnalysis.brightness,
+            blurScore: lastAnalysis.blurScore,
+            smoothing: settings.smoothing)
+        lastAdjustment = adj
+    }
+
+    /// 生效值 = 用户滑杆 + 自适应偏移(clamp 0-1)。预览/录像链统一取 effectiveSettings。
+    var effectiveSmoothing: Double { CorrectionEngine.clamp01(settings.smoothing + lastAdjustment.smoothingDelta) }
+    var effectiveSharpen: Double { CorrectionEngine.clamp01(settings.sharpen + lastAdjustment.sharpenDelta) }
+    var effectiveBrightening: Double { CorrectionEngine.clamp01(settings.brightening + lastAdjustment.brighteningDelta) }
+    /// 渲染链生效配置:用户设定为底,自适应偏移叠加(拍照 .photo 链同用,所见即所得一致)
+    var effectiveSettings: FilterSettings {
+        guard autoAdapt, !lastAdjustment.isNeutral else { return settings }
+        var s = settings
+        s.smoothing = effectiveSmoothing
+        s.sharpen = effectiveSharpen
+        s.brightening = effectiveBrightening
+        return s
     }
 
     func attach(_ view: CIRenderView) {

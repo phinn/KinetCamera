@@ -88,6 +88,19 @@
 - **静音防线**:全零音轨环境实测,录制中 audioSilentWarning=true 实时触发,
   成片 audio.json {audioSilent:true, audioPeakDB:-200} 自动打标
 
+### 5.3 视频专项+交付底线增量(09-27,详见 VIDEO_SPEC_E2E_20260927.md)
+
+- **录像质量档显式化**:hd1080p30/uhd4k60 两档,fps/minWidth/sessionPreset 三维语义+单测钉死
+  (档位虚标在竞品普遍存在:标 4K 实际裁切降采样,KinetCamera 档位契约进单测)
+- **录制中切镜头**:PTS 豁免窗口,20s 切 3 摄位成片 19.86s 无跳段(系统相机切镜有 1-2 帧冻结)
+- **10 分钟长录**:600.70s、dropped=0 全程、53.5MB(多数第三方 app 长录内存膨胀/后台饿死)
+- **后台中断守卫**:录制中进后台自动安全收尾+UI 标记(竞品普遍录完才发现后半段丢失)
+- **交付底线**:JPEG 内嵌 Display P3 ICC(字节级验证 mluc desc)+EXIF Make/Model 兜底
+  (竞品 JPEG 无 ICC 跨设备色漂是常态)
+- **iOS target 落地修正**:第 5.1 表 #7"无 iOS 版"过时 —— KinetCameraiOS target 已
+  BUILD SUCCEEDED(iOS 17+,同一滤镜链/合成栈/AIAnalyzer,采集层共享 CameraManager #if 分支)
+- **hf 反升定论**:保边磨皮数学表象,受控实验 85% 压噪 × 92% 保边(HF_LAB_NOTE_20260927.md)
+
 ## 六、RAW/手动对焦平台墙定论(09-26 晚探针实锤,此线关闭)
 
 **探针**:scripts/cap_probe.swift(macOS 27 SDK,Xcode 27A266a 编译+运行)

@@ -124,6 +124,40 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .kinetToggleAELock)) { _ in
             vm.manager.toggleAELock()
         }
+        .onOpenURL { url in
+            // kinetcamera:// 真机验收控制面:devicectl process openURL 即可驱动,
+            // 不依赖端口转发(USB 无 iproxy 时唯一的远程控制通道)
+            Self.handleDeepLink(url, vm: vm)
+        }
+    }
+
+    /// 深链路由:kinetcamera://action?param=value,动作与 /action HTTP 路由同语义
+    static func handleDeepLink(_ url: URL, vm: CameraViewModel) {
+        let host = url.host ?? url.pathComponents.dropFirst().first ?? ""
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let q = { (k: String) -> String? in
+            comps?.queryItems?.first { $0.name == k }?.value
+        }
+        DispatchQueue.main.async {
+            switch host {
+            case "switch":
+                if let id = q("id") { vm.switchDevice(id) }
+            case "capture":
+                vm.capturePhoto()
+            case "record":
+                vm.manager.isRecording ? vm.stopRecording() : vm.startRecording()
+            case "beauty":
+                if let s = q("s") { vm.settings.smoothing = Double(s) ?? 0 }
+                if let w = q("w") { vm.settings.whitening = Double(w) ?? 0 }
+                if let sh = q("sh") { vm.settings.sharpen = Double(sh) ?? 0 }
+            case "pip":
+                if let id = q("id") { vm.togglePIP(id) }
+            case "zoom":
+                if let f = q("f") { vm.setZoom(Double(f) ?? 1) }
+            default:
+                break
+            }
+        }
     }
 }
 

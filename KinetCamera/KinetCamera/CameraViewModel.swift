@@ -236,14 +236,38 @@ final class CameraViewModel: ObservableObject {
                     return
                 }
             }
+            // P0-1 运动对策(2026-09-28):帧间运动量 >18 → 自动连拍选锐(帧环最近 6 帧按
+            // 清晰度选最优),替代单帧。运动模糊是竞品差评第一高频词,单帧必糊。
+            if autoAdapt {
+                let ring = self.manager.recentFrames(6) ?? []
+                if ring.count >= 4 {
+                    let ctx = self.pipeline.renderContext
+                    let motion = AIAnalyzer.motionScore(ring[ring.count-2].image, ring[ring.count-1].image, context: ctx)
+                    if motion > 18.0 {
+                        var best: (idx: Int, score: Double, image: CIImage)?
+                        for (i, f) in ring.enumerated() {
+                            guard let cg = ctx.createCGImage(f.image, from: f.image.extent) else { continue }
+                            let sharp = AIAnalyzer.sharpnessScore(cgImage: cg)
+                            if best == nil || sharp > best!.score { best = (i, sharp, f.image) }
+                        }
+                        if let pick = best {
+                            await self.processAndSave(
+                                pick.image, beauty: beauty,
+                                retroNote: String(format: "运动检测 %.0f → 连拍选锐 #%d/%d", motion, pick.idx + 1, ring.count))
+                            return
+                        }
+                    }
+                }
+            }
             await self.processAndSave(frame, beauty: beauty)
         }
     }
 
     /// 回溯快门:痛点"快门按下去的瞬间,笑刚好停了/手抖了/孩子跑出焦了"。
     /// 帧环保有快门前 ~2s(60帧@30fps),全量打分后选综合最优帧走正常落盘链。
-    func captureRetro() {
-        let frames = manager.recentFrames(60) ?? []
+    /// 回溯扫描帧数可参数化(P1-4:/retro?frames=30 → 1s 窗口;默认 60 = 2s)
+    func captureRetro(frames requested: Int = 60) {
+        let frames = manager.recentFrames(max(12, min(60, requested))) ?? []
         guard frames.count >= 12 else {
             lastSavedPath = "回溯失败:帧环不足(\(manager.ringCount)/12)"
             return

@@ -15,6 +15,7 @@ struct AIAnalysis: Equatable {
     var tiltAngle: Double = 0       // 水平倾角(度,正=画面向左倾);|角度|>1.2 自动转正
     var fisheyeHint: Double = 0     // 广角畸变线索 0-1(人脸贴边+宽高比异常时升高)
     var faceRect: CGRect? = nil     // 主脸归一化 bbox(原点左下;脸区加权选帧/再对焦策略输入)
+    var backlight: Double = 0       // 逆光强度 0-1(脸区亮度比全局暗 >2EV 时升高;P0-3 脸优先曝光输入)
 
     static let empty = AIAnalysis()
 }
@@ -88,6 +89,19 @@ enum AIAnalyzer {
         result.faceCount = faces.count
         result.faceRect = faces.first?.boundingBox   // 主脸 bbox(脸区加权/对焦策略共用)
 
+        // P0-3 逆光检测:脸区均值 vs 全局均值,脸暗 ≥2EV(4x)= 逆光(AE 对背景测光把脸压黑)
+        if let face = result.faceRect {
+            let stats = backlightStats(cgImage: cg, faceRect: face)
+            // faceMean 是 0-1 域(toGray 归一),防除零 clamp 0.05(过亮脸 clamp 1 会让 ratio 恒 <1,
+            // 逆光永远检不出 —— 首测 2.8x 实际场景打出 0.67 的单位 bug)
+            if stats.faceMean > 0.02 {
+                let ratio = stats.globalMean / max(stats.faceMean, 0.05)
+                if ratio > 2.0 {
+                    result.backlight = min(1.0, (ratio - 2.0) / 4.0)
+                }
+            }
+        }
+
         // 水平倾角(Vision 官方 horizon 检测):|tilt|>1.2° 才值得自动转正,
         // 小角度日常手持抖动不动它(转正必裁画面,小于阈值的裁切无收益)
         let horizonReq = VNDetectHorizonRequest()
@@ -131,6 +145,29 @@ enum AIAnalyzer {
         if result.colorCast < -20 { tips.append("画面偏冷/偏蓝") }
         result.suggestion = tips.isEmpty ? "画质 OK,可拍" : tips.joined(separator:";")
         return result
+    }
+
+    /// 逆光检测统计:脸区均值 vs 全局均值(0-255 灰度)。
+    /// 脸区用归一化 bbox(原点左下 → CG 像素坐标翻转 Y),下采样 256 边算力微秒级。
+    static func backlightStats(cgImage: CGImage, faceRect: CGRect) -> (faceMean: Double, globalMean: Double) {
+        guard let g = toGray(cgImage) else { return (0, 0) }
+        let (px, w, h) = g
+        // Vision bbox 原点左下,CG 图像原点左上 → Y 翻转
+        let x0 = max(0, Int(faceRect.minX * CGFloat(w)))
+        let x1 = min(w - 1, Int(faceRect.maxX * CGFloat(w)))
+        let y0 = max(0, Int((1.0 - faceRect.maxY) * CGFloat(h)))
+        let y1 = min(h - 1, Int((1.0 - faceRect.minY) * CGFloat(h)))
+        guard x1 > x0, y1 > y0 else { return (0, 0) }
+        var faceSum = 0.0
+        var faceN = 0.0
+        for y in y0...y1 {
+            let row = y * w
+            for x in x0...x1 { faceSum += Double(px[row + x]); faceN += 1 }
+        }
+        var globalSum = 0.0
+        for v in px { globalSum += Double(v) }
+        guard faceN > 0 else { return (0, 0) }
+        return (faceSum / faceN, globalSum / Double(px.count))
     }
 
     /// 色偏检测:全图 R、B 通道均值差(0-255 域)。
@@ -301,6 +338,20 @@ enum AIAnalyzer {
         return grayViaRGBA(cg, w: w, h: h)
     }
 
+    /// 帧间运动量(0-255 级灰度平均绝对差,P0-1 运动模糊对策输入)。
+    /// >18 视为明显运动(宠物跑动/手抖),拍照链自动切连拍选锐。
+    /// 实现:两帧各降采样 128px 灰度,逐像素 |a-b| 均值。算力 <1ms。
+    static func motionScore(_ a: CIImage, _ b: CIImage, context: CIContext) -> Double {
+        guard let cgA = context.createCGImage(a, from: a.extent),
+              let cgB = context.createCGImage(b, from: b.extent) else { return 0 }
+        let w = 128, h = max(8, w * cgA.height / max(cgA.width, 1))
+        guard let ga = grayViaRGBA(cgA, w: w, h: h),
+              let gb = grayViaRGBA(cgB, w: w, h: h) else { return 0 }
+        var sum = 0.0
+        for i in 0..<ga.pixels.count { sum += abs(Double(ga.pixels[i] - gb.pixels[i])) }
+        return sum / Double(ga.pixels.count) * 255.0
+    }
+
     /// 低分画面 → 修正链。返回(修正后图, 施加的修正名列表)。
     /// userSmoothing > 0.2 视为用户显式磨皮,自动美颜步跳过(防双重涂抹)。
     static func autoCorrect(_ image: CIImage, analysis: AIAnalysis, userSmoothing: Double = 0,
@@ -312,6 +363,37 @@ enum AIAnalyzer {
         // "过曝"压光是方向性 bug:高分恰恰是接近理想,导致白背景正常照片被反向压光/提亮。
         // 暗光增强档(bias < -0.45,严重欠曝)≠ 普通提亮:亮度拉起 + 降噪 + 局部对比,
         // 避免暗部噪声一起放大(普通欠曝只提亮不降噪)
+        // P0-3 逆光修正(2026-09-28):脸区比全局暗 ≥2EV 时,对人脸区域局部提亮(EV 1.2 + gamma 0.8),
+        // 背景不动 —— 全局提亮会把亮背景推到过曝。修正强度随 backlight 分级,轻逆光只 EV。
+        if enabled.contains(.exposure), analysis.backlight > 0.15, let face = analysis.faceRect {
+            let ext = out.extent
+            // 脸区中心与半径(归一化 → 像素;半径放宽 1.4x 把发际/肩颈一起罩住)
+            let cx = ext.minX + face.midX * ext.width
+            let cy = ext.minY + face.midY * ext.height
+            let r0 = max(face.width, face.height) * ext.width * 0.5
+            let r1 = r0 * 1.4
+            let faceMask = CIImage(color: CIColor.white).cropped(to: ext)
+                .applyingFilter("CIRadialGradient", parameters: [
+                    "inputCenter": CIVector(x: cx, y: cy),
+                    "inputRadius0": r0,
+                    "inputRadius1": r1,
+                    "inputColor0": CIColor.white,
+                    "inputColor1": CIColor.black,
+                ])
+                .cropped(to: ext)
+            // 脸区提亮强度:轻逆光(0.15-0.35)只 EV 0.8;重逆光(>0.35)EV 1.2 + gamma 0.8
+            let heavy = analysis.backlight > 0.35
+            var lifted = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: heavy ? 1.2 : 0.8])
+            if heavy {
+                lifted = lifted.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.8])
+            }
+            out = lifted.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputImageKey: lifted,
+                kCIInputBackgroundImageKey: out,
+                kCIInputMaskImageKey: faceMask,
+            ])
+            applied.append(heavy ? "AI逆光救援(脸区提亮+gamma)" : "AI逆光补偿(脸区提亮)")
+        }
         if enabled.contains(.exposure), analysis.exposureBias < -0.45 {
             out = out.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 1.3])
             out = out.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.78])   // 抬暗部少压高光

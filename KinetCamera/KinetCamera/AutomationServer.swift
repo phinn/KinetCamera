@@ -341,10 +341,15 @@ final class AutomationServer {
             DispatchQueue.main.async { self.vm?.setFocusPeaking(on) }
             reply(conn, json: "{\"ok\":true,\"focusPeaking\":\(on ? 0.8 : 0)}")
         case ("POST", "/retro"):            // 回溯快门:扫描快门前2s帧环,AI选综合最优帧落盘
+            // ?frames=N 参数化扫描窗口(12-60,默认 60;P1-4)
+            let retroFrames = target.range(of: "frames=").map { rest -> Int in
+                let v = String(target[rest.upperBound...]).components(separatedBy: "&").first ?? ""
+                return Int(v) ?? 60
+            } ?? 60
             DispatchQueue.main.async { [weak self] in
                 guard let self, let vm = self.vm else { conn.cancel(); return }
-                vm.captureRetro()
-                self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\"}")
+                vm.captureRetro(frames: retroFrames)
+                self.reply(conn, json: "{\"ok\":true,\"action\":\"retro\",\"frames\":\(retroFrames)}")
             }
         case ("POST", "/synthLens"):
             // /synthLens?lens=uw|wide|tele —— 合成源回退态的虚拟摄位切换(模拟器无源验收链)

@@ -179,11 +179,21 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertFalse(adj.reason.isEmpty)
     }
     func testDarkSceneNoSmoothingNoIntervention() {
-        // 用户磨皮全关 = 明确意图,自动档不介入
+        // 用户磨皮全关 = 明确意图,磨皮/补锐不介入;
+        // 但暗光提亮仍生效(2026-09-28 P0-2:夜视预览独立于美颜意图,取景不再黑)
         let adj = CorrectionEngine.autoAdjust(brightness: 0.10, blurScore: 60, smoothing: 0.0)
         XCTAssertEqual(adj.smoothingDelta, 0)
         XCTAssertEqual(adj.sharpenDelta, 0)
-        XCTAssertTrue(adj.isNeutral)
+        XCTAssertGreaterThan(adj.brighteningDelta, 0, "暗光夜视预览提亮独立于磨皮意图")
+        XCTAssertFalse(adj.isNeutral)
+        XCTAssertFalse(adj.reason.isEmpty)
+    }
+    func testDarkSceneBrighteningScalesWithDarkness() {
+        // 越暗提亮越多,封顶 0.50
+        let mild = CorrectionEngine.autoAdjust(brightness: 0.20, blurScore: 60, smoothing: 0.5)
+        let dark = CorrectionEngine.autoAdjust(brightness: 0.05, blurScore: 60, smoothing: 0.5)
+        XCTAssertGreaterThan(dark.brighteningDelta, mild.brighteningDelta)
+        XCTAssertLessThanOrEqual(dark.brighteningDelta, 0.50)
     }
     func testBrightSceneReducesSmoothing() {
         let adj = CorrectionEngine.autoAdjust(brightness: 0.85, blurScore: 70, smoothing: 0.6)

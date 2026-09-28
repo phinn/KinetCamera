@@ -183,8 +183,16 @@ final class CameraViewModel: ObservableObject {
     var effectiveBrightening: Double { CorrectionEngine.clamp01(settings.brightening + lastAdjustment.brighteningDelta) }
     /// 渲染链生效配置:用户设定为底,自适应偏移叠加(拍照 .photo 链同用,所见即所得一致)
     var effectiveSettings: FilterSettings {
-        guard autoAdapt, !lastAdjustment.isNeutral else { return settings }
         var s = settings
+        // 暗光前置提亮(P0-2 夜视预览):按最近一次帧分析亮度给增益,美颜链前生效。
+        // 拍照 .photo 链内部另有中位亮度检测(pass0)兜底,这里主要驱动预览/录像 GPU 档。
+        let b = lastAnalysis.brightness
+        if autoAdapt, b > 0, b < 0.24 {
+            s.lowLightBoost = min(0.50, (0.24 - b) * 2.2)
+        } else {
+            s.lowLightBoost = 0
+        }
+        guard autoAdapt, !lastAdjustment.isNeutral else { return s }
         s.smoothing = effectiveSmoothing
         s.sharpen = effectiveSharpen
         s.brightening = effectiveBrightening

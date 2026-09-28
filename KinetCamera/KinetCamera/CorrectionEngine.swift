@@ -30,17 +30,22 @@ enum CorrectionEngine {
     static func autoAdjust(brightness: Double, blurScore: Double, smoothing: Double) -> BeautyAdjustment {
         var adj = BeautyAdjustment()
 
-        // 场景1:暗光(亮度<0.24 ≈ 60/255)——磨皮烧噪是根因,压噪优先,磨皮后补锐
+        // 场景1:暗光(亮度<0.24 ≈ 60/255)——磨皮烧噪是根因,压噪优先,磨皮后补锐;
+        // 同步预览提亮(2026-09-28 P0-2:取景黑拍完亮是竞品高频差评,预览所见即所得)
         if brightness < 0.24 {
-            // 磨皮全关时不介入(用户意图明确:零磨皮)
+            // 磨皮全关时不介入磨皮(用户意图明确:零磨皮),但提亮仍生效(暗光预览增益独立于美颜意图)
             if smoothing > 0.05 {
                 adj.smoothingDelta = min(0.15, (0.24 - brightness) * 0.8)  // 越暗越多压,封顶+0.15
                 adj.sharpenDelta = 0.08                                     // 压噪细节损失补偿
-                adj.reason = "暗光场景:自动加强压噪+补锐(防噪点被锐化放大)"
             } else {
                 adj.sharpenDelta = 0
-                adj.reason = ""
             }
+            // 提亮增益:亮度 0.24→0 越暗越多,封顶 +0.50(EV≈0.28,亮度 6.8/255 的暗房实测拉到 ~25-30)
+            // 注意:纯暗光预览也提亮,让用户取景时就能看到"夜视预览"效果,不再拍完才亮
+            adj.brighteningDelta = min(0.50, (0.24 - brightness) * 2.2)
+            adj.reason = smoothing > 0.05
+                ? "暗光场景:自动提亮+压噪+补锐(夜视预览)"
+                : "暗光场景:自动提亮(夜视预览)"
             return adj
         }
 

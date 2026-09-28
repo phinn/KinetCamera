@@ -17,11 +17,12 @@ struct FilterSettings: Equatable {
     var exposureEV: Double = 0       // -2..+2 手动曝光 EV(软件增益档,macOS 硬件无曝光API)
     var softwareZoom: Double = 1.0   // 1.0-8.0 软件中心裁切变焦(硬件 zoomFactor 不可用时兜底)
     var faceSlim: Double = 0         // 0-1 瘦脸(Vision 下颌 landmark 驱动的局部 warp)
+    var lowLightBoost: Double = 0    // 0-1 暗光前置提亮(调用方按帧亮度填;美颜链前生效,防暗底美颜失效)
 
     var isNeutral: Bool {
         smoothing == 0 && whitening == 0 && brightening == 0 && warmth == 0
             && sharpen == 0 && saturation == 0 && backgroundBlur == 0 && vignette == 0
-            && softwareZoom == 1.0
+            && softwareZoom == 1.0 && lowLightBoost == 0
     }
     static let neutral = FilterSettings(sharpen: 0)
 }
@@ -118,7 +119,13 @@ final class FilterPipeline {
 
         // 2) 美颜(磨皮+美白):小域 CPU 一趟 pass(导向滤波保边 + YCbCr 肤色掩膜),
         //    GPU 只做 Lanczos 升采样和掩膜混合 —— 避开 CI 色彩空间 linear/gamma 坑。
-        //    录像(.video)帧率优先:全程 GPU 快速路径(CIGaussianBlur 磨皮+CI 肤色掩膜),30fps 可达。
+        //    录像(.video)帧率优先:全程 GPU 快速档(CIGaussianBlur 磨皮+CI 肤色掩膜),30fps 可达。
+        // 2a) GPU 前置提亮:暗光下美颜在暗底上失效(掩膜失真+B 偏移被暗底吞),先拉到可工作亮度。
+        //     lowLightBoost 由调用方按帧亮度给(AIAnalyzer.brightness<0.24 → (0.24-b)*2.2,封顶 0.5)
+        if settings.lowLightBoost > 0 {
+            let ev = settings.lowLightBoost * 1.2   // 0.5 → EV 0.6 ≈ 1.5x 增益,叠加尾段 brightening 后可达 2x+
+            image = image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
+        }
         if quality == .video && (settings.smoothing > 0 || settings.whitening > 0) {
             // 磨皮:肤色掩膜内高斯(掩膜=YCbCr 肤色域 GPU 版,和 CPU 同一套容差判据)
             if settings.smoothing > 0 {
@@ -197,7 +204,36 @@ final class FilterPipeline {
             let scaled = input.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale])
                 .cropped(to: input.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale]).extent)
             if let smallCG = renderContext.createCGImage(scaled, from: scaled.extent),
-               let (bytes, sw, sh) = GuidedFilter.rgba(of: smallCG) {
+               let (bytes0, sw, sh) = GuidedFilter.rgba(of: smallCG) {
+                let n = sw * sh
+                var bytes = bytes0  // pass0 暗光前置提亮就地修改,后续链全部基于提亮后底色
+                // ---- CPU pass 0:美颜前置提亮(2026-09-28 P0-2 暗光美颜失效根因) ----
+                // 暗房实测亮度 6.8/255 时美颜前后无差:美白 B+14 是在暗底上做,Cr/Cb 掩膜也因
+                // 暗部噪声失真。此处按中位亮度预提亮到 Y≥60 再进美颜链,美颜在"正常底"上工作。
+                // gain 记录到 lowLightGain,焊接参照(fullBytes)同步乘增益,否则提亮差被当边缘焊回。
+                var lowLightGain: Float = 1.0
+                do {
+                    var ys = [Float](repeating: 0, count: n)
+                    for i in 0..<n {
+                        ys[i] = 0.299*Float(bytes[i*4]) + 0.587*Float(bytes[i*4+1]) + 0.114*Float(bytes[i*4+2])
+                    }
+                    ys.sort()
+                    let yMed = ys[n/2]
+                    if yMed < 130 {
+                        // 目标 130/255:美白掩膜亮度门 wY(y>0.15)只是下限,真门槛是 Cr 通道可信度
+                        // 与肤区 Y 中位过门 —— 肤区通常比全图中位亮 1.8-2.2x,全图中位 130 时肤区
+                        // ≈ 240?不,过曝风险。实测标定:全图中位 90 → 肤区 45-55,仍被 wY 门拦。
+                        // 拍照链修正:全图中位拉到 130,肤区中位 ≈ 65-75,配合 pass2 的 wY 门放宽到 0.12
+                        // (前置提亮后噪声可控)。线性 gain(封顶 8x)+ gamma 越暗越激进。
+                        let lin = min(8.0, 130 / max(yMed, 2))
+                        lowLightGain = lin
+                        let gamma: Float = lin > 6 ? 2.0 : (lin > 4 ? 1.8 : (lin > 2 ? 1.5 : 1.2))
+                        for j in 0..<(n*4) where j % 4 != 3 {
+                            let v = min(Float(bytes[j]) * lin, 255)
+                            bytes[j] = UInt8(max(0, min(255, 255 * pow(v / 255, 1.0 / gamma))))
+                        }
+                    }
+                }
                 // ---- CPU pass 1:导向滤波(保边平滑基座) ----
                 let smoothing = settings.smoothing
                 // 半径 cap:同质区需 ≥2r 才不被边界泄漏污染(小域最窄特征/16 为安全上限)
@@ -206,7 +242,6 @@ final class FilterPipeline {
                 let eps = Float(0.10)
                 let g = GuidedFilter.apply(rgba: bytes, width: sw, height: sh, radius: radius, eps: eps)
                 // ---- CPU pass 2:YCbCr 肤色掩膜(浮点,免色彩空间坑) ----
-                let n = sw * sh
                 var mask = [Float](repeating: 0, count: n)
                 if settings.whitening > 0 {
                     for i in 0..<n {
@@ -225,8 +260,10 @@ final class FilterPipeline {
                         }
                         let wCr = soft(cr, 0.52, 0.72)
                         let wCb = soft(cb, 0.33, 0.48)
-                        // 亮度门:暗部(Cr 噪声大)与剪裁区不算皮肤
-                        let wY = y > 0.15 && y < 0.97 ? Float(1) : Float(0)
+                        // 亮度门:暗部(Cr 噪声大)与剪裁区不算皮肤。
+                        // 0.15→0.12(2026-09-28):暗光前置提亮后肤区 Y 60-80 的场景被旧门拦掉,
+                        // 0.12≈30/255,Cr 在提亮后 Y>50 噪声已可控,暗光美颜不再被亮度门整门拦死
+                        let wY = y > 0.12 && y < 0.97 ? Float(1) : Float(0)
                         mask[i] = wCr * wCb * wY
                     }
                     // 掩膜 1px 盒滤波柔化(与导向滤波同积分图实现)
@@ -299,7 +336,9 @@ final class FilterPipeline {
                         var fin = [UInt8](repeating: 0, count: uw * uh * 4)
                         for i in 0..<(uw * uh) {
                             let i4 = i * 4
-                            let oR = Float(fullBytes[i4]), oG = Float(fullBytes[i4+1]), oB = Float(fullBytes[i4+2])
+                            // 焊接参照同步前置提亮增益:否则提亮后的磨皮 vs 暗原图差被当边缘焊回,
+                            // 前置提亮整体被吃掉(pass5 美白同类根因,2026-09-28)
+                            let oR = Float(fullBytes[i4]) * lowLightGain, oG = Float(fullBytes[i4+1]) * lowLightGain, oB = Float(fullBytes[i4+2]) * lowLightGain
                             let gR = Float(upBytes[i4]), gG = Float(upBytes[i4+1]), gB = Float(upBytes[i4+2])
                             // 跨通道取 |hf| 最大者作边缘置信度(避免单通道偶然抵消)
                             let m = max(abs(oR-gR), abs(oG-gG), abs(oB-gB))

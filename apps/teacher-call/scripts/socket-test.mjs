@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { io } = require('../web/node_modules/socket.io-client');
 
-const BASE = 'http://localhost:3311';
+const BASE = process.env.TC_BASE || 'http://localhost:3311';
 const events = [];
 let pass = 0, fail = 0;
 const ok = (n, c, d = '') => { c ? pass++ : fail++; console.log(`  ${c ? '✅' : '❌'} ${n}${d ? ' — ' + d : ''}`); };

@@ -1,5 +1,5 @@
 // 边界自测脚本:错误密码/空文本/超长文本/不存在目标/错误配对码/重复点击/断线重连/连发排队
-const BASE = 'http://localhost:3311';
+const BASE = process.env.TC_BASE || 'http://localhost:3311';
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = '') => {
   if (cond) { pass++; console.log(`  ✅ ${name}${detail ? ' — ' + detail : ''}`); }

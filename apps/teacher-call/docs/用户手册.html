@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>教师呼叫系统 · 部署与使用手册</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --card: #1c2128;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4a9eff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --mono: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    line-height: 1.75;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+  /* ===== 封面 ===== */
+  .cover {
+    text-align: center;
+    padding: 56px 24px 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  .cover .logo {
+    font-size: 56px;
+    line-height: 1;
+    margin-bottom: 16px;
+  }
+  .cover h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+  .cover .sub {
+    color: var(--muted);
+    margin-top: 10px;
+    font-size: 15px;
+  }
+  .cover .tags {
+    margin-top: 20px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .tag {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: var(--bg2);
+  }
+  .tag.b { color: var(--accent); border-color: rgba(74,158,255,.35); }
+  .tag.g { color: var(--green); border-color: rgba(63,185,80,.35); }
+
+  /* ===== 章节 ===== */
+  section { margin-bottom: 56px; }
+  h2 {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2 .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #1f6feb, #4a9eff);
+    font-size: 16px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  h3 {
+    font-size: 17px;
+    margin: 28px 0 12px;
+    color: var(--accent);
+  }
+  p { color: #c9d1d9; margin-bottom: 12px; }
+  p b, li b { color: var(--text); }
+
+  /* ===== 卡片 ===== */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .card.tip { border-left: 3px solid var(--green); }
+  .card.warn { border-left: 3px solid var(--orange); }
+  .card.danger { border-left: 3px solid var(--red); }
+  .card .label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tip .label { color: var(--green); }
+  .warn .label { color: var(--orange); }
+  .danger .label { color: var(--red); }
+  .card p:last-child { margin-bottom: 0; }
+
+  /* ===== 代码块 ===== */
+  pre {
+    background: #0a0d12;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    margin: 14px 0;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: .92em;
+  }
+  p code, li code, td code {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: #79c0ff;
+  }
+  pre .c { color: var(--muted); }
+  pre .p { color: #79c0ff; }
+  pre .g { color: var(--green); }
+
+  /* ===== 表格 ===== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th {
+    text-align: left;
+    background: var(--bg2);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: .5px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+  }
+  td {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    color: #c9d1d9;
+  }
+  tr:hover td { background: rgba(74,158,255,.05); }
+
+  /* ===== 步骤流程图 ===== */
+  .steps { counter-reset: step; margin: 20px 0; }
+  .step {
+    position: relative;
+    padding: 0 0 24px 52px;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0; top: 0;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--bg2);
+    border: 2px solid var(--accent);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step::after {
+    content: '';
+    position: absolute;
+    left: 16px; top: 38px; bottom: 4px;
+    width: 2px;
+    background: var(--border);
+  }
+  .step:last-child::after { display: none; }
+  .step h4 {
+    font-size: 16px;
+    margin-bottom: 6px;
+    padding-top: 5px;
+  }
+  .step p { margin-bottom: 6px; }
+
+  /* ===== 手机模拟图 ===== */
+  .phone-flow {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 24px 0;
+  }
+  .phone {
+    width: 150px;
+    background: #000;
+    border-radius: 22px;
+    padding: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  }
+  .phone .screen-m {
+    background: var(--bg2);
+    border-radius: 16px;
+    padding: 12px 10px;
+    min-height: 230px;
+    display: flex;
+    flex-direction: column;
+  }
+  .phone .p-title {
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+  .chip {
+    font-size: 10.5px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 8px;
+    margin-bottom: 5px;
+    color: #c9d1d9;
+  }
+  .chip.hl { border-color: var(--accent); color: var(--accent); background: rgba(74,158,255,.08); }
+  .chip.ok { border-color: var(--green); color: var(--green); background: rgba(63,185,80,.08); }
+  .phone .p-note {
+    margin-top: auto;
+    text-align: center;
+    font-size: 9.5px;
+    color: var(--muted);
+  }
+  .phone .arrow-below {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 6px;
+  }
+  .big-num {
+    font-size: 20px; font-weight: 800; letter-spacing: 3px;
+    color: var(--accent); text-align: center;
+    font-family: var(--mono);
+    background: #000;
+    border-radius: 8px;
+    padding: 8px 0;
+    margin: 6px 0;
+  }
+
+  /* ===== 大屏模拟图 ===== */
+  .tv {
+    background: #000;
+    border-radius: 14px;
+    padding: 10px;
+    margin: 20px auto;
+    max-width: 640px;
+    box-shadow: 0 8px 40px rgba(0,0,0,.6);
+  }
+  .tv .tv-screen {
+    border-radius: 8px;
+    background: linear-gradient(160deg, #101724, #0a0f16);
+    border: 1px solid var(--border);
+    padding: 28px 24px;
+    text-align: center;
+  }
+  .tv .tv-clock { font-size: 52px; font-weight: 200; font-family: var(--mono); letter-spacing: 2px; }
+  .tv .tv-date { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .tv .tv-code-label { color: var(--muted); font-size: 12px; margin-top: 20px; letter-spacing: 2px; }
+  .tv .tv-code { font-size: 34px; font-weight: 800; letter-spacing: 10px; color: var(--accent); font-family: var(--mono); margin: 4px 0 16px; }
+  .tv .tv-recent { border-top: 1px solid var(--border); padding-top: 12px; color: var(--muted); font-size: 12px; }
+  .tv .tv-recent .r-item { display: flex; justify-content: space-between; padding: 3px 8px; color: #8b949e; }
+  .tv-calling {
+    background: linear-gradient(160deg, #132a15, #0a1f10) !important;
+    border-color: rgba(63,185,80,.4) !important;
+  }
+  .tv .tv-call-name { font-size: 42px; font-weight: 800; color: var(--green); margin-top: 20px; }
+  .tv .tv-call-sub { color: #c9d1d9; font-size: 16px; margin-top: 8px; }
+  .tv .tv-call-text { font-size: 22px; color: var(--text); margin-top: 16px; font-weight: 600; }
+  .tv .tv-wave { font-size: 22px; letter-spacing: 6px; margin-top: 18px; color: var(--green); }
+  .tv .tv-count { color: var(--muted); font-size: 12px; margin-top: 14px; }
+
+  /* ===== 架构图 ===== */
+  .arch {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0;
+    margin: 24px 0;
+    flex-wrap: wrap;
+  }
+  .arch .node {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    text-align: center;
+    min-width: 150px;
+  }
+  .arch .node .n-icon { font-size: 28px; }
+  .arch .node .n-title { font-weight: 700; margin-top: 6px; font-size: 14px; }
+  .arch .node .n-desc { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .arch .link {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--accent);
+    font-size: 11px;
+    min-width: 70px;
+  }
+  .arch .link .l-line { font-size: 20px; line-height: 1; }
+  .arch .link .l-label { color: var(--muted); margin-top: 2px; }
+
+  /* ===== FAQ ===== */
+  details {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  summary {
+    cursor: pointer;
+    padding: 14px 20px;
+    font-weight: 600;
+    font-size: 15px;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  summary::before { content: '▸'; color: var(--accent); transition: transform .2s; }
+  details[open] summary::before { transform: rotate(90deg); }
+  details .d-body { padding: 0 20px 16px 44px; color: #c9d1d9; font-size: 14.5px; }
+  details .d-body pre { margin: 10px 0; }
+
+  .kbd {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-family: var(--mono);
+    font-size: .88em;
+  }
+  footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  @media (max-width: 640px) {
+    .phone-flow { gap: 8px; }
+    .phone { width: 128px; }
+    .arch { flex-direction: column; align-items: center; }
+    .arch .link { transform: rotate(90deg); padding: 8px 0; }
+  }
+  @media print {
+    body { background: #fff; color: #111; }
+    pre, .card, .tv, .phone { background: #f6f8fa; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ 封面 ═══════════ -->
+<div class="cover">
+  <div class="logo">📣</div>
+  <h1>教师呼叫系统</h1>
+  <div class="sub">部署与使用手册 · 服务器部署 → 大屏配对 → 手机端呼叫</div>
+  <div class="tags">
+    <span class="tag b">Vue3 + Express + Socket.io</span>
+    <span class="tag">零数据库依赖</span>
+    <span class="tag g">局域网即用</span>
+  </div>
+</div>
+
+<!-- ═══════════ 0. 系统概览 ═══════════ -->
+<section>
+  <h2><span class="num">0</span>系统概览</h2>
+  <p>教师在手机上选择学生或老师,发送呼叫消息。消息实时推送到教室大屏,<b>全屏大字显示并语音播报三遍</b>「某某同学,请到老师办公室来」。</p>
+
+  <div class="arch">
+    <div class="node">
+      <div class="n-icon">📱</div>
+      <div class="n-title">教师手机</div>
+      <div class="n-desc">浏览器访问<br>选班级 → 点人 → 发送</div>
+    </div>
+    <div class="link">
+      <div class="l-line">⇄</div>
+      <div class="l-label">HTTP / WebSocket</div>
+    </div>
+    <div class="node">
+      <div class="n-icon">🖥️</div>
+      <div class="n-title">服务器</div>
+      <div class="n-desc">单一 Node 进程<br>端口 3311 · JSON 存储</div>
+    </div>
+    <div class="link">
+      <div class="l-line">⇄</div>
+      <div class="l-label">实时推送 + 语音</div>
+    </div>
+    <div class="node">
+      <div class="n-icon">📺</div>
+      <div class="n-title">教室大屏</div>
+      <div class="n-desc">浏览器全屏显示<br>大字横幅 + 语音播报</div>
+    </div>
+  </div>
+
+  <table>
+    <tr><th>端</th><th>地址</th><th>用途</th></tr>
+    <tr><td><b>手机端</b></td><td><code>http://&lt;服务器IP&gt;:3311/</code></td><td>教师登录、选人、发呼叫</td></tr>
+    <tr><td><b>大屏端</b></td><td><code>http://&lt;服务器IP&gt;:3311/screen</code></td><td>教室大屏全屏展示与播报</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════ 1. 服务器部署 ═══════════ -->
+<section>
+  <h2><span class="num">1</span>服务器部署</h2>
+
+  <h3>1.1 环境要求</h3>
+  <table>
+    <tr><th>项目</th><th>要求</th><th>检查命令</th></tr>
+    <tr><td>Node.js</td><td>≥ 18(推荐 20/22)</td><td><code>node -v</code></td></tr>
+    <tr><td>npm</td><td>随 Node 自带</td><td><code>npm -v</code></td></tr>
+    <tr><td>网络</td><td>教师手机与大屏须能访问服务器 IP</td><td>同一局域网最简</td></tr>
+  </table>
+
+  <h3>1.2 三步上线</h3>
+  <pre><span class="c"># ① 进入项目目录(首次会自动装依赖)</span>
+cd apps/teacher-call
+npm run build
+
+<span class="c"># ② 启动服务(默认端口 3311)</span>
+npm start
+<span class="g"># ✓ teacher-call server listening on http://0.0.0.0:3311</span>
+
+<span class="c"># ③ 防火墙放行端口(如已开启防火墙)</span>
+<span class="c"># CentOS / 麒麟系:</span>
+firewall-cmd --add-port=3311/tcp --permanent && firewall-cmd --reload
+<span class="c"># Ubuntu / Debian 系:</span>
+ufw allow 3311</pre>
+
+  <div class="card tip">
+    <div class="label">✓ 验证部署成功</div>
+    <p>在同一局域网的任意设备浏览器打开 <code>http://&lt;服务器IP&gt;:3311/</code>,出现登录页即部署成功。</p>
+  </div>
+
+  <h3>1.3 查询服务器 IP</h3>
+  <pre><span class="c"># Linux / macOS</span>
+ip addr | grep inet     <span class="c"># 或</span>
+ifconfig | grep inet
+
+<span class="c"># Windows</span>
+ipconfig</pre>
+  <p>找 <b>192.168.x.x</b> 或 <b>10.x.x.x</b> 开头的内网地址,例如 <code>192.168.1.100</code>。</p>
+
+  <h3>1.4 可选配置</h3>
+  <table>
+    <tr><th>需求</th><th>做法</th></tr>
+    <tr><td>更换端口</td><td><code>PORT=8080 npm start</code></td></tr>
+    <tr><td>开机自启</td><td>用 <b>pm2</b> 守护:<code>npm i -g pm2 && pm2 start server/index.js --name teacher-call && pm2 save && pm2 startup</code></td></tr>
+    <tr><td>重置全部数据</td><td>停止服务后删除 <code>server/data/db.json</code>,重启即恢复初始种子数据</td></tr>
+  </table>
+
+  <div class="card warn">
+    <div class="label">⚠ 数据说明</div>
+    <p>所有数据(账号、班级、呼叫记录)持久化在 <code>server/data/db.json</code>,<b>请勿在服务运行时删除或手工编辑</b>。呼叫记录自动保留最近 500 条。</p>
+  </div>
+</section>
+
+<!-- ═══════════ 2. 大屏端设置 ═══════════ -->
+<section>
+  <h2><span class="num">2</span>教室大屏设置(一次性)</h2>
+  <p>教室大屏(或接大屏的电脑)用浏览器打开大屏地址,完成配对后<b>无需再动</b>。</p>
+
+  <div class="steps">
+    <div class="step">
+      <h4>打开大屏页面</h4>
+      <p>在大屏浏览器地址栏输入 <code>http://&lt;服务器IP&gt;:3311/screen</code></p>
+    </div>
+    <div class="step">
+      <h4>生成配对码</h4>
+      <p>点击 <b>「生成本屏配对码」</b> 按钮,页面会显示 6 位数字配对码,并<b>自动进入全屏</b>。</p>
+      <div class="tv">
+        <div class="tv-screen">
+          <div class="tv-clock">14:30</div>
+          <div class="tv-date">9月28日 星期一</div>
+          <div class="tv-code-label">本屏配对码</div>
+          <div class="tv-code">248 613</div>
+          <div class="tv-recent">
+            <div style="margin-bottom:6px">📋 最近呼叫</div>
+            <div class="r-item"><span>二年1班 · 林可欣</span><span>14:22</span></div>
+            <div class="r-item"><span>三年2班 · 王强老师</span><span>14:05</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <h4>保持页面常开</h4>
+      <p>系统已自动开启<b>屏幕常亮锁</b>与<b>语音保活</b>——即使标签页被切到后台,语音播报也不会中断。建议使用 Chrome / Edge 浏览器,不要关闭此标签页。</p>
+    </div>
+  </div>
+
+  <h3>大屏控制角标(右上角)</h3>
+  <table>
+    <tr><th>按钮</th><th>功能</th></tr>
+    <tr><td>🔊 / 🔇</td><td>语音播报开 / 静音</td></tr>
+    <tr><td>↻</td><td>重播上一条呼叫</td></tr>
+    <tr><td>⛶</td><td>进入 / 退出全屏</td></tr>
+    <tr><td>⚙</td><td>解绑本屏(重新生成配对码时使用)</td></tr>
+  </table>
+
+  <div class="card tip">
+    <div class="label">✓ 多块大屏</div>
+    <p>一个服务支持绑定<b>多块大屏</b>:每块大屏各自打开 <code>/screen</code> 生成自己的配对码即可,互不干扰。呼叫时选择推送到哪一块。</p>
+  </div>
+</section>
+
+<!-- ═══════════ 3. 手机端使用 ═══════════ -->
+<section>
+  <h2><span class="num">3</span>手机端使用指南</h2>
+
+  <h3>3.1 登录</h3>
+  <p>手机浏览器打开 <code>http://&lt;服务器IP&gt;:3311/</code>,输入账号密码:</p>
+  <table>
+    <tr><th>账号</th><th>密码</th><th>角色</th></tr>
+    <tr><td><code>wang</code></td><td><code>123456</code></td><td>教师(示例)</td></tr>
+    <tr><td><code>admin</code></td><td><code>admin123</code></td><td>管理员</td></tr>
+  </table>
+
+  <h3>3.2 呼叫全流程(4 步)</h3>
+  <div class="phone-flow">
+    <div class="phone">
+      <div class="screen-m">
+        <div class="p-title">① 选年级</div>
+        <div class="chip hl">二年级</div>
+        <div class="chip">一年级</div>
+        <div class="chip">三年级</div>
+        <div class="p-note">点击所在年级</div>
+      </div>
+    </div>
+    <div class="phone">
+      <div class="screen-m">
+        <div class="p-title">② 选班级</div>
+        <div class="chip hl">二年 1 班</div>
+        <div class="chip">二年 2 班</div>
+        <div class="chip">二年 3 班</div>
+        <div class="p-note">点击学生所在班级</div>
+      </div>
+    </div>
+    <div class="phone">
+      <div class="screen-m">
+        <div class="p-title">③ 选人</div>
+        <div class="chip">林可欣</div>
+        <div class="chip hl">赵雨桐</div>
+        <div class="chip">李英语老师</div>
+        <div class="p-note">学生或任课老师</div>
+      </div>
+    </div>
+    <div class="phone">
+      <div class="screen-m">
+        <div class="p-title">④ 发呼叫</div>
+        <div class="chip">请到办公室</div>
+        <div class="chip hl">请到传达室</div>
+        <div class="chip ok">✅ 已推送大屏</div>
+        <div class="p-note">选话术或手输,点发送</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>3.3 呼叫页细节</h3>
+  <ul style="padding-left: 22px; color: #c9d1d9;">
+    <li><b>快捷话术</b>:点常用短语一键填入,也可直接打字自定义内容(≤500 字)</li>
+    <li><b>常用语记忆</b>:手动输入过的内容会自动记住,下次一键复用</li>
+    <li><b>送达提示</b>:「✅ 已推送到大屏,正在播报」= 大屏在线;「⚠️ 大屏未连接,消息已记录」= 大屏离线但记录已保存</li>
+    <li><b>防误触</b>:发送后按钮自动禁用,不会重复推送</li>
+  </ul>
+
+  <h3>3.4 大屏收到后是什么效果</h3>
+  <div class="tv">
+    <div class="tv-screen tv-calling">
+      <div class="tv-call-name">赵雨桐</div>
+      <div class="tv-call-sub">二年1班 · 王老师呼叫</div>
+      <div class="tv-call-text">「请到传达室来,妈妈给你送伞」</div>
+      <div class="tv-wave">🔊 ▪▫▪▫▪▫▪</div>
+      <div class="tv-count">语音播报中 · 约 12 秒后自动返回</div>
+    </div>
+  </div>
+  <p style="text-align:center; color: var(--muted); font-size: 14px;">大字全屏展示 → 中文语音自动播报 3 遍 → 自动回到待机时钟</p>
+</section>
+
+<!-- ═══════════ 4. 常见问题 ═══════════ -->
+<section>
+  <h2><span class="num">4</span>常见问题 FAQ</h2>
+
+  <details>
+    <summary>手机提示「大屏未连接」怎么办?</summary>
+    <div class="d-body">
+      <p>按顺序检查:</p>
+      <p>① 大屏页<b>是否打开着</b>(浏览器标签页不能关);<br>
+      ② 大屏浏览器地址是否用的<b>同一台服务器 IP</b>;<br>
+      ③ 刷新大屏页面,若配对码变了,旧码已失效 —— 重新生成即可;<br>
+      ④ 仍不通时,在大屏页点 ⚙ 解绑后重新生成配对码。</p>
+      <p>注:大屏离线时消息仍会记录在呼叫日志中,不会丢失。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>语音播报没有声音?</summary>
+    <div class="d-body">
+      <p>① 检查右上角是否处于 🔇 静音状态;<br>
+      ② 检查大屏设备本身的音量;<br>
+      ③ Chrome / Edge 浏览器支持最好;若页面曾长时间挂后台,点一下屏幕任意位置即可恢复播报(保活机制会自动重试)。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>忘记密码 / 需要新增教师账号?</summary>
+    <div class="d-body">
+      <p>账号数据在服务器 <code>server/data/db.json</code> 的 <code>users</code> 数组中。停止服务后编辑该文件(密码为 SHA-256 值,修改需重新计算),或直接删除 <code>db.json</code> 恢复初始账号。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>外网 / 跨网段能访问吗?</summary>
+    <div class="d-body">
+      <p>系统本身是纯 HTTP + WebSocket,只要网络可达即可。跨公网访问建议:</p>
+      <p>① 前置 Nginx 反向代理并配置 HTTPS;<br>
+      ② 或使用内网穿透(frp / Tailscale 等);<br>
+      ③ 暴露公网时务必修改默认密码。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>学校有多栋教学楼,每块屏都要配对吗?</summary>
+    <div class="d-body">
+      <p>是,每块大屏各自打开 <code>/screen</code> 生成配对码,一次性操作。发送呼叫时可选择目标大屏;只有一块大屏时无需选择,自动推送。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>手机用的过程中换了个网络(如 WiFi 切 4G)会掉线吗?</summary>
+    <div class="d-body">
+      <p>登录状态基于 cookie,只要新网络仍能访问服务器 IP 就不掉线。跨公网切换(内网 → 外网地址变了)需要重新登录一次。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>如何查看呼叫历史?</summary>
+    <div class="d-body">
+      <p>大屏待机页滚动显示最近呼叫;完整日志(最近 500 条)存在服务器 <code>server/data/db.json</code> 的 <code>callLog</code> 中。</p>
+    </div>
+  </details>
+</section>
+
+<!-- ═══════════ 5. 附录 ═══════════ -->
+<section>
+  <h2><span class="num">5</span>附录:快速命令速查</h2>
+  <pre><span class="c"># ── 部署 ──────────────────────────────</span>
+npm run build                        <span class="c"># 首次部署:装依赖 + 构建前端</span>
+npm start                            <span class="c"># 启动服务(端口 3311)</span>
+PORT=8080 npm start                  <span class="c"># 自定义端口</span>
+
+<span class="c"># ── 守护进程(pm2)────────────────────</span>
+npm i -g pm2
+pm2 start server/index.js --name teacher-call
+pm2 save && pm2 startup              <span class="c"># 开机自启</span>
+pm2 logs teacher-call                <span class="c"># 看日志</span>
+pm2 restart teacher-call             <span class="c"># 重启</span>
+
+<span class="c"># ── 数据 ──────────────────────────────</span>
+server/data/db.json                  <span class="c"># 全部数据(账号/班级/日志)</span>
+rm server/data/db.json && npm start  <span class="c"># 重置为初始种子数据</span>
+
+<span class="c"># ── 入口 ──────────────────────────────</span>
+http://&lt;服务器IP&gt;:3311/              <span class="c"># 手机端</span>
+http://&lt;服务器IP&gt;:3311/screen        <span class="c"># 大屏端</span></pre>
+
+  <div class="card danger">
+    <div class="label">🚫 上线前安全清单</div>
+    <p>① 修改默认账号密码(<code>admin/admin123</code>、<code>wang/123456</code>);<br>
+    ② 若暴露公网,务必配置 HTTPS + 反向代理;<br>
+    ③ 定期备份 <code>server/data/db.json</code>。</p>
+  </div>
+</section>
+
+<footer>
+  教师呼叫系统 · 部署与使用手册 · Vue3 + Express + Socket.io<br>
+  <span style="font-size:12px">文档生成于 2026-09-28 · 适用版本 v1.0</span>
+</footer>
+
+</body>
+</html>
